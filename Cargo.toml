@@ -1,0 +1,21 @@
+[package]
+name = "codex-img"
+version = "0.2.0"
+edition = "2021"
+description = "Generate and edit images with your ChatGPT/Codex subscription, calling the Codex image endpoint directly."
+license = "Apache-2.0"
+repository = "https://github.com/foksa/codex-img"
+rust-version = "1.82"
+
+[dependencies]
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+ureq = { version = "2", default-features = false, features = ["tls"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -7,10 +7,10 @@ Generate images from the command line with your ChatGPT/Codex subscription. It n
 ## Install
 
 ```sh
-./scripts/install.sh    # or: bun run install-local
+./scripts/install.sh    # needs a Rust toolchain (https://rustup.rs)
 ```
 
-This builds `dist/codex-img` (a standalone binary) and symlinks:
+This builds `target/release/codex-img`, a single ~1.4 MB binary with no runtime dependencies, and symlinks:
 - the binary to `~/.local/bin/codex-img` (override with `BIN_DIR`);
 - the agent skill `skills/codex-img` into `~/.claude/skills/` and `~/.codex/skills/`, for whichever of those tools you have installed.
 
@@ -36,7 +36,7 @@ codex-img status --json                                     # login check, uses 
 |---|---|
 | `-o, --output` | File or directory. A trailing `/` or an existing directory gets generated names. With `-n`, files get `-1`, `-2`, … suffixes. Existing files are never overwritten. |
 | `-i, --image` | Reference image to edit or compose (PNG/JPEG/WebP, repeatable, max 5) |
-| `-f, --format` | `png` \| `jpeg` \| `webp`. Defaults to the `-o` extension, then `png`. The endpoint returns PNG; `jpeg` is converted locally with macOS `sips`; `webp` needs `--via-responses` |
+| `-f, --format` | `png` \| `jpeg` \| `webp`. Defaults to the `-o` extension, then `png`. The endpoint returns PNG; `jpeg` is converted locally, with transparency flattened onto white; `webp` needs `--via-responses` |
 | `-s, --size` | `WxH` or `auto` |
 | `-q, --quality` | `low` \| `medium` \| `high` \| `auto` |
 | `-b, --background` | `transparent` \| `opaque` \| `auto` |
@@ -56,7 +56,7 @@ Exit codes: `0` ok, `1` error, `2` auth, `3` quota, `4` moderation, `64` usage.
 - **What's honoured.** `size` is a hint: `1536x1024` has come back at 1536x1024 and also at 1370x1148, and square comes back around 1254x1254. Check `size` in the `--json` output. `background: transparent` gives real alpha. `quality` is capped at medium on the subscription. The endpoint doesn't validate its inputs and ignores unknown values, so `codex-img` checks them before sending.
 - `codex-img` only reads `auth.json`. It never refreshes or writes tokens, so it can't interfere with your `codex` login. If the login has expired or gets rejected, it exits with code `2` and tells you to open Codex (the `codex` CLI or the app) so it renews the login, or to run `codex login`. `CODEX_HOME` overrides `~/.codex`.
 - The image model is chosen by the backend. It is currently `gpt-image-2-codex`, reported as `imageModel` in `--json`. `--model` only picks the routing model.
-- Debugging: `CODEX_IMG_DEBUG_RAW=/tmp/raw.txt codex-img …` saves the response headers and the raw event stream. The file includes the base64 image and session cookies, so don't share it as-is.
+- Debugging: `CODEX_IMG_DEBUG_RAW=/tmp/raw.txt codex-img …` saves the raw response body (the JSON, or the event stream with `--via-responses`). It contains the full base64 image.
 - Image generation uses your subscription's image quota.
 
 ## Credits

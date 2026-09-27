@@ -1,5 +1,5 @@
-node_modules/
-dist/
 *.png
 *.jpg
 *.webp
+target/
+.DS_Store

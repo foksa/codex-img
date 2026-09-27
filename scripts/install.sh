@@ -5,10 +5,9 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 bin_dir=${BIN_DIR:-$HOME/.local/bin}
 
 cd "$root"
-bun install --silent
-bun run build >/dev/null
+cargo build --release --quiet
 mkdir -p "$bin_dir"
-ln -sfn "$root/dist/codex-img" "$bin_dir/codex-img"
+ln -sfn "$root/target/release/codex-img" "$bin_dir/codex-img"
 echo "binary: $bin_dir/codex-img"
 
 for skills in "$HOME/.claude/skills" "$HOME/.codex/skills"; do

@@ -23,7 +23,7 @@ codex-img status --json                                # check login, uses no qu
 | `-s` | `1536x1024` (landscape), `1024x1536` (portrait), `auto`; a hint for the shape, not exact pixels |
 | `-b` | `transparent` for real alpha (PNG only), `opaque`, `auto` |
 | `-q` | `low` \| `medium` \| `high` \| `auto`; a hint, and the subscription caps it at medium |
-| `-f` | `png` (native) or `jpeg` (converted locally on macOS). Use PNG unless the user wants JPEG. |
+| `-f` | `png` (native) or `jpeg` (converted locally; transparency becomes white). Use PNG unless the user wants JPEG. |
 
 Use `-` as the prompt to read it from stdin. That avoids shell quoting problems for long prompts:
 
@@ -55,7 +55,7 @@ If the command isn't found, the tool isn't installed. Tell the user rather than 
 
 ## Behaviour to expect
 
-- `-s` is a hint. The backend picks the final pixels: a `1536x1024` request has come back at 1536x1024 and also at 1370x1148, and square usually comes back around 1254x1254. Also state the shape in the prompt ("wide landscape"), check `size` in the JSON, and if you need exact dimensions, resize or crop afterwards (for example `sips -z 1024 1024 in.png --out out.png` on macOS) and say so.
+- `-s` is a hint. The backend picks the final pixels: a `1536x1024` request has come back at 1536x1024 and also at 1370x1148, and square usually comes back around 1254x1254. Also state the shape in the prompt ("wide landscape"), check `size` in the JSON, and if you need exact dimensions, resize or crop afterwards (for example with `sips -z 1024 1024 in.png --out out.png` on macOS, or ImageMagick) and say so.
 - Edits keep the input image's framing and aspect ratio, and change only what the prompt asks for.
 - The backend chooses the image model and ignores any model name. Asking for a specific model such as "Images 2.5" in the prompt doesn't change it either. `size` and `quality` in the JSON are what the backend reported.
 - Leave `--via-responses` and `--model` alone. They're a fallback route that rewrites the prompt and ignores `--size`; use them only if the user asks for WebP output or the default route is failing.
