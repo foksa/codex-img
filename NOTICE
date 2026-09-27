@@ -1,0 +1,6 @@
+codex-img
+Copyright 2026 Djordje Radakovic
+
+Portions of src/codex-response.ts and src/generate.ts are derived from
+pi-codex-image-gen (https://github.com/jvm/pi-mono/tree/main/packages/pi-codex-image-gen),
+Copyright Jose Mocito, licensed under the Apache License, Version 2.0.
