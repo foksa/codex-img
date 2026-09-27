@@ -6,6 +6,17 @@ Generate images from the command line with your ChatGPT/Codex subscription. It n
 
 ## Install
 
+**Prebuilt binary:** download the archive for your platform from [Releases](https://github.com/foksa/codex-img/releases). Builds exist for macOS (Apple Silicon and Intel) and Linux (x86-64 and ARM64, fully static). Unpack it and put `codex-img` on your `PATH`. The archive also contains the agent skill in `skills/codex-img`.
+
+```sh
+tar -xzf codex-img-*-aarch64-apple-darwin.tar.gz
+install codex-img-*/codex-img ~/.local/bin/
+```
+
+On macOS, a binary downloaded with a browser may be quarantined; clear that with `xattr -d com.apple.quarantine ~/.local/bin/codex-img`.
+
+**From source:**
+
 ```sh
 ./scripts/install.sh    # needs a Rust toolchain (https://rustup.rs)
 ```
