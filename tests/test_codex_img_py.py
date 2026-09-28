@@ -116,7 +116,7 @@ class Test(unittest.TestCase):
         self.assertEqual(self.run_cli("x", "-o", os.path.join(self.dir, "r.png"), "--quiet")[0], 0)
 
     def test_unsupported_options_fail_before_any_request(self):
-        for args in (["x", "-f", "jpeg"], ["x", "--via-responses"], ["x", "-o", "a.jpg"], ["x", "-s", "big"], []):
+        for args in (["convert", "a.png", "-o", "a.webp"], ["x", "-f", "jpeg"], ["x", "-c", "64"], ["x", "--via-responses"], ["x", "-o", "a.jpg"], ["x", "-s", "big"], []):
             self.assertEqual(self.run_cli(*args)[0], 64, args)
         self.assertEqual(Server.requests, [])
 

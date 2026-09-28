@@ -1,6 +1,6 @@
 ---
 name: codex-img
-description: Generate or edit raster images (PNG/JPEG) with the `codex-img` CLI, which uses the user's ChatGPT/Codex subscription. Use when the user asks to create, draw, render, or edit a picture, photo, illustration, icon, sticker, mockup, or other bitmap asset, or to change an existing image with AI. Not for charts, diagrams, or vector/SVG art that code can produce exactly.
+description: Generate or edit raster images (PNG/JPEG/WebP) with the `codex-img` CLI, which uses the user's ChatGPT/Codex subscription. Use when the user asks to create, draw, render, or edit a picture, photo, illustration, icon, sticker, mockup, or other bitmap asset, or to change an existing image with AI. Not for charts, diagrams, or vector/SVG art that code can produce exactly.
 ---
 
 # codex-img
@@ -14,6 +14,7 @@ codex-img "<prompt>" -o <path> --json                  # generate
 codex-img "<prompt>" -i <image> -o <path> --json       # edit / use as reference (repeat -i, max 5)
 codex-img "<prompt>" -n 3 -o <dir>/ --json             # 3 variations in parallel (only if asked)
 codex-img status --json                                # check login, uses no quota
+codex-img convert <file>... [-o <path>] [-f fmt] [-c n] --json   # convert existing images, uses no quota
 ```
 
 | Option | Values |
@@ -23,7 +24,8 @@ codex-img status --json                                # check login, uses no qu
 | `-s` | `1536x1024` (landscape), `1024x1536` (portrait), `auto`; a hint for the shape, not exact pixels |
 | `-b` | `transparent` for real alpha (PNG only), `opaque`, `auto` |
 | `-q` | `low` \| `medium` \| `high` \| `auto`; a hint, and the subscription caps it at medium |
-| `-f` | `png` (native) or `jpeg` (converted locally; transparency becomes white). Use PNG unless the user wants JPEG. |
+| `-f` | `png` (native), `jpeg` (converted locally; transparency becomes white) or `webp` (lossless, keeps transparency). Use PNG unless the user wants another format. |
+| `-c` | (PNG is always recompressed losslessly, so plain PNG files are already about half the backend's size.) Quantize PNG to a palette of 2–256 colours, keeping transparency. For icons, stickers, logos and flat illustrations meant for the web or an app, `-c 64` to `-c 256` usually cuts the file 10x or more with no visible change. Don't use it for photos or soft gradients; if banding shows, raise the count or add `--dither`. |
 
 Use `-` as the prompt to read it from stdin. That avoids shell quoting problems for long prompts:
 
@@ -32,6 +34,17 @@ codex-img - -o out.png --json <<'EOF'
 multi-line prompt here, with "quotes" and $symbols
 EOF
 ```
+
+## Converting and shrinking existing images
+
+`codex-img convert` handles PNG, JPEG and WebP files locally, with no login and no quota. Use it instead of ImageMagick or Pillow for format changes and size reduction, including on images you generated earlier. Don't call the image model just to change the format.
+
+- `codex-img convert in.png -o out.webp`, or `-f jpeg`, changes the format.
+- `codex-img convert icon.png -c 64` writes `icon.min.png`, a palette PNG, for flat art.
+- `codex-img convert in.png` writes `in.min.png`, lossless recompression only.
+- With several inputs, `-o` must be a directory ending in `/`.
+
+It never overwrites existing files or the input. It doesn't resize; use `sips` or ImageMagick for that. Keep prompts that start with the word "convert" quoted, because a bare `convert` as the first argument runs this subcommand.
 
 ## Workflow
 
@@ -61,7 +74,7 @@ python3 <skill-dir>/scripts/codex_img.py "<prompt>" -o <path>.png --json
 
 Its limits:
 - **PNG only.** It refuses `-f`, and any `-o` extension other than `.png`, before spending quota. If the user wants JPEG or WebP, or exact pixel dimensions, generate a PNG and then convert or resize it yourself (`sips`, ImageMagick, Pillow).
-- **No `--via-responses` or `--model`.**
+- **No `-c`/`--dither` quantization, no `convert` subcommand, and no `--via-responses` or `--model`.**
 
 If `python3` is missing as well, tell the user rather than trying another image service. They can install the binary from the project's releases page.
 
@@ -70,7 +83,7 @@ If `python3` is missing as well, tell the user rather than trying another image 
 - `-s` is a hint. The backend picks the final pixels: a `1536x1024` request has come back at 1536x1024 and also at 1370x1148, and square usually comes back around 1254x1254. Also state the shape in the prompt ("wide landscape"), check `size` in the JSON, and if you need exact dimensions, resize or crop afterwards (for example with `sips -z 1024 1024 in.png --out out.png` on macOS, or ImageMagick) and say so.
 - Edits keep the input image's framing and aspect ratio, and change only what the prompt asks for.
 - The backend chooses the image model and ignores any model name. Asking for a specific model such as "Images 2.5" in the prompt doesn't change it either. `size` and `quality` in the JSON are what the backend reported.
-- Leave `--via-responses` and `--model` alone. They're a fallback route that rewrites the prompt and ignores `--size`; use them only if the user asks for WebP output or the default route is failing.
+- Leave `--via-responses` and `--model` alone. They're a fallback route that rewrites the prompt and ignores `--size`; use them only if the default route is failing.
 
 ## Writing prompts
 

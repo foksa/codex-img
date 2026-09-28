@@ -21,7 +21,7 @@ On macOS, a binary downloaded with a browser may be quarantined; clear that with
 ./scripts/install.sh    # needs a Rust toolchain (https://rustup.rs)
 ```
 
-This builds `target/release/codex-img`, a single ~1.4 MB binary with no runtime dependencies, and symlinks:
+This builds `target/release/codex-img`, a single ~1.9 MB binary with no runtime dependencies, and symlinks:
 - the binary to `~/.local/bin/codex-img` (override with `BIN_DIR`);
 - the agent skill `skills/codex-img` into `~/.claude/skills/` and `~/.codex/skills/`, for whichever of those tools you have installed.
 
@@ -41,6 +41,7 @@ codex-img "app icon, paper plane" -o icon.webp
 codex-img "wide landscape of a lighthouse" --size 1536x1024
 codex-img "make it night with aurora" -i fox.png -o fox-night.jpg
 codex-img "sticker of a cat" --background transparent -n 4 -o stickers/
+codex-img "flat app icon, paper plane" -c 64 -o icon.png          # palette PNG, ~10-70x smaller
 echo "long prompt..." | codex-img - --json
 codex-img status --json                                     # login check, uses no quota
 ```
@@ -49,18 +50,37 @@ codex-img status --json                                     # login check, uses 
 |---|---|
 | `-o, --output` | File or directory. A trailing `/` or an existing directory gets generated names. With `-n`, files get `-1`, `-2`, … suffixes. Existing files are never overwritten. |
 | `-i, --image` | Reference image to edit or compose (PNG/JPEG/WebP, repeatable, max 5) |
-| `-f, --format` | `png` \| `jpeg` \| `webp`. Defaults to the `-o` extension, then `png`. The endpoint returns PNG; `jpeg` is converted locally, with transparency flattened onto white; `webp` needs `--via-responses` |
+| `-f, --format` | `png` \| `jpeg` \| `webp`. Defaults to the `-o` extension, then `png`. The endpoint returns PNG and the rest is converted locally: `jpeg` at quality 90, with transparency flattened onto white; `webp` lossless, keeping transparency |
+| `-c, --colors` | Quantize PNG output to a palette of 2–256 colours, like pngquant. Transparency is kept. Best for flat art: a 969 KB icon came out at 13 KB with 64 colours |
+| `--dither` | Dither while quantizing. Smooths gradients and photos, but makes files larger |
 | `-s, --size` | `WxH` or `auto` |
 | `-q, --quality` | `low` \| `medium` \| `high` \| `auto` |
 | `-b, --background` | `transparent` \| `opaque` \| `auto` |
-| `--via-responses` | Fallback route: a routing model calls the `image_generation` tool through the Responses API. The prompt may be rewritten and `--size` is ignored, but it can return WebP |
+| `--via-responses` | Fallback route: a routing model calls the `image_generation` tool through the Responses API. The prompt may be rewritten and `--size` is ignored |
 | `-m, --model` | Routing model for `--via-responses` (default `gpt-5.5`) |
 | `-n, --count` | Images to generate in parallel (1–10). Each one is a separate request |
 | `--json` | Prints one JSON line per image: path, size, quality, revised prompt, usage, duration |
 | `--quiet` | No progress output on stderr |
 
+PNG output is always recompressed losslessly with oxipng. That roughly halves the backend's PNGs (946 KB → 462 KB in testing) without changing a pixel.
+
 Paths go to stdout and progress goes to stderr, so the tool composes well in scripts and agent tools.
 Exit codes: `0` ok, `1` error, `2` auth, `3` quota, `4` moderation, `64` usage.
+
+### Converting existing images
+
+`codex-img convert` runs the same local pipeline on files you already have. It needs no login and uses no quota.
+
+```sh
+codex-img convert hero.png -o hero.webp          # PNG/JPEG/WebP in, any of them out
+codex-img convert icon.png -c 64                 # -> icon.min.png, palette PNG
+codex-img convert photo.png                      # -> photo.min.png, lossless recompression only
+codex-img convert shots/*.png -f jpeg -o out/    # several inputs need a directory
+```
+
+Without `-o`, output goes next to the input as `<name>.<ext>`, or `<name>.min.<ext>` when that would be the input itself. It takes `-o`, `-f`, `-c`, `--dither`, `--json` and `--quiet`, with the same meaning as above. Existing files, including the input, are never overwritten. Each input is converted independently: if one fails, the others still run and the exit code reports the failure.
+
+A bare `convert` as the first argument always runs this subcommand. A prompt that starts with the word still works when it's quoted, e.g. `codex-img "convert this sketch into a watercolor" -i sketch.png`.
 
 ## Notes
 

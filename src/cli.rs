@@ -17,13 +17,21 @@ Usage:
   codex-img [options] "<prompt>"
   echo "<prompt>" | codex-img [options] -
   codex-img status [--json]   Check the Codex login offline (uses no quota)
+  codex-img convert <input>... [-o path] [-f fmt] [-c n]
+                              Convert existing images locally (no quota);
+                              see `codex-img convert --help`
 
 Options:
   -o, --output <path>       Output file or directory (default: current directory)
   -i, --image <path>        Reference image to edit/compose (repeatable, max {MAX_EDIT_IMAGES})
   -f, --format <fmt>        png | jpeg | webp (default: from -o extension, else png).
-                            The direct route returns PNG (jpeg is converted locally);
-                            webp needs --via-responses
+                            The backend returns PNG; jpeg and webp (lossless) are
+                            converted locally
+  -c, --colors <n>          Quantize PNG output to a palette of n colours (2-256);
+                            keeps transparency, often 10x+ smaller on flat art.
+                            PNG output is always recompressed losslessly
+      --dither              Dither when quantizing (smoother gradients/photos,
+                            larger files)
   -s, --size <WxH>          Shape hint, e.g. 1536x1024, 1024x1536, auto
   -q, --quality <q>         low | medium | high | auto
   -b, --background <bg>     transparent | opaque | auto
@@ -53,6 +61,9 @@ pub struct Options {
     pub size: Option<String>,
     pub quality: Option<String>,
     pub background: Option<String>,
+    /// Palette size for PNG quantization.
+    pub colors: Option<u16>,
+    pub dither: bool,
     pub model: Option<String>,
     pub via_responses: bool,
     pub count: usize,
@@ -65,6 +76,8 @@ pub enum Command {
     Help,
     Version,
     Status { json: bool },
+    Convert(crate::convert::ConvertOptions),
+    ConvertHelp,
     Run(Options),
 }
 
@@ -83,6 +96,10 @@ fn is_size(value: &str) -> bool {
 pub fn parse(args: &[String]) -> Result<Command> {
     if args.first().is_some_and(|a| a == "status") && args[1..].iter().all(|a| a == "--json") {
         return Ok(Command::Status { json: args.len() > 1 });
+    }
+    // Always a subcommand: a prompt starting with the word must be quoted ("convert ...").
+    if args.first().is_some_and(|a| a == "convert") {
+        return Ok(crate::convert::parse(&args[1..])?.map_or(Command::ConvertHelp, Command::Convert));
     }
     let mut values: Vec<(&'static str, String)> = Vec::new();
     let mut flags: Vec<&'static str> = Vec::new();
@@ -110,14 +127,16 @@ pub fn parse(args: &[String]) -> Result<Command> {
             "-b" | "--background" => "background",
             "-m" | "--model" => "model",
             "-n" | "--count" => "count",
+            "-c" | "--colors" => "colors",
             "--json" => "json",
             "--quiet" => "quiet",
             "--via-responses" => "via-responses",
+            "--dither" => "dither",
             "-h" | "--help" => "help",
             "-v" | "--version" => "version",
             _ => return Err(Error::usage(format!("Unknown option: {arg}"))),
         };
-        if matches!(key, "json" | "quiet" | "via-responses" | "help" | "version") {
+        if matches!(key, "json" | "quiet" | "via-responses" | "dither" | "help" | "version") {
             flags.push(key);
         } else {
             let value = match inline {
@@ -150,6 +169,14 @@ pub fn parse(args: &[String]) -> Result<Command> {
         None => 1,
         Some(n) => n.parse::<usize>().ok().filter(|n| (1..=10).contains(n)).ok_or_else(|| Error::usage("--count must be an integer from 1 to 10."))?,
     };
+    let colors = last("colors").map(|n| parse_colors(&n)).transpose()?;
+    if colors.is_some() && format.is_some_and(|f| f != Format::Png) {
+        return Err(Error::usage("--colors only applies to PNG output."));
+    }
+    let dither = flags.contains(&"dither");
+    if dither && colors.is_none() {
+        return Err(Error::usage("--dither only applies with --colors."));
+    }
     let via_responses = flags.contains(&"via-responses");
     let model = last("model");
     if model.is_some() && !via_responses {
@@ -167,18 +194,14 @@ pub fn parse(args: &[String]) -> Result<Command> {
         size,
         quality: one_of("quality", last("quality"), &["low", "medium", "high", "auto"])?,
         background: one_of("background", last("background"), &["transparent", "opaque", "auto"])?,
+        colors,
+        dither,
         model,
         via_responses,
         count,
         json: flags.contains(&"json"),
         quiet: flags.contains(&"quiet"),
     }))
-}
-
-/// Refuse, before spending quota, formats the chosen route cannot deliver.
-pub fn format_problem(format: Format, via_responses: bool) -> Option<&'static str> {
-    (format == Format::Webp && !via_responses)
-        .then_some("WebP output needs --via-responses: the direct endpoint only returns PNG, and codex-img can't encode WebP.")
 }
 
 fn sanitize_id(id: &str) -> String {
@@ -204,6 +227,33 @@ pub fn output_path(output: Option<&str>, format: Format, id: &str, index: usize,
     path.with_file_name(format!("{stem}-{}.{}", index + 1, current.as_deref().unwrap_or(ext)))
 }
 
+pub fn parse_colors(value: &str) -> Result<u16> {
+    value.parse::<u16>().ok().filter(|n| (2..=256).contains(n)).ok_or_else(|| Error::usage("--colors must be an integer from 2 to 256."))
+}
+
+fn create_parent(path: &Path) -> Result<()> {
+    match path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        Some(parent) => std::fs::create_dir_all(parent).map_err(|e| Error::other(format!("Could not create {}: {e}", parent.display()))),
+        None => Ok(()),
+    }
+}
+
+/// Encode `wanted` from `bytes`; PNG output is also recompressed losslessly (best effort).
+fn encode_output(bytes: &[u8], actual: Format, wanted: Format, colors: Option<u16>, dither: bool) -> Result<Vec<u8>> {
+    let converted = if actual == wanted && colors.is_none() { bytes.to_vec() } else { images::convert(bytes, wanted, colors, dither)? };
+    Ok(if wanted == Format::Png { images::optimize_png(&converted).unwrap_or(converted) } else { converted })
+}
+
+/// `convert` subcommand: write `bytes` as `wanted` to a new file. Returns the path and pixel size.
+pub fn save_converted(bytes: &[u8], wanted: Format, colors: Option<u16>, dither: bool, path: &Path) -> Result<(PathBuf, (u32, u32))> {
+    let actual = images::sniff(bytes).ok_or_else(|| Error::other("Input is not a PNG, JPEG or WebP image."))?;
+    let out = encode_output(bytes, actual, wanted, colors, dither)?;
+    let dimensions = images::dimensions(&out)?;
+    create_parent(path)?;
+    write_new(path, &out)?;
+    Ok((path.to_path_buf(), dimensions))
+}
+
 fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -213,31 +263,21 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     file.write_all(bytes).map_err(|e| Error::other(format!("Could not write {}: {e}", path.display())))
 }
 
-/// Write the image as `wanted`, converting PNG to JPEG when needed. If the bytes can't be turned into
-/// the requested format, keep them under their real extension: the quota is already spent.
-pub fn save_image(bytes: &[u8], actual: Format, wanted: Format, path: &Path) -> Result<(PathBuf, Option<String>)> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| Error::other(format!("Could not create {}: {e}", parent.display())))?;
-    }
-    if actual == wanted {
-        write_new(path, bytes)?;
-        return Ok((path.to_path_buf(), None));
-    }
-    let conversion_error = if actual == Format::Png && wanted == Format::Jpeg {
-        match images::png_to_jpeg(bytes) {
-            Ok(jpeg) => {
-                write_new(path, &jpeg)?;
-                return Ok((path.to_path_buf(), None));
-            }
-            Err(e) => Some(e.message),
+/// Write the image as `wanted`, converting (and quantizing, with `colors`) when needed; PNG output is
+/// also recompressed losslessly. If the bytes can't be converted, keep them under their real
+/// extension: the quota is already spent.
+pub fn save_image(bytes: &[u8], actual: Format, wanted: Format, colors: Option<u16>, dither: bool, path: &Path) -> Result<(PathBuf, Option<String>)> {
+    create_parent(path)?;
+    let error = match encode_output(bytes, actual, wanted, colors, dither) {
+        Ok(out) => {
+            write_new(path, &out)?;
+            return Ok((path.to_path_buf(), None));
         }
-    } else {
-        None
+        Err(e) => e.message,
     };
     let fallback = path.with_extension(actual.extension());
     write_new(&fallback, bytes)?;
-    let reason = conversion_error.map(|e| format!(" ({e})")).unwrap_or_default();
-    Ok((fallback.clone(), Some(format!("backend returned {}, not {}{reason}; saved as {}", actual.name(), wanted.name(), fallback.display()))))
+    Ok((fallback.clone(), Some(format!("{error}; saved the original {} as {}", actual.name(), fallback.display()))))
 }
 
 pub fn describe(path: &Path, image: &Generated) -> Value {
@@ -310,6 +350,13 @@ mod tests {
         assert!(usage_error(&["-o"]).contains("needs a value"));
         assert!(usage_error(&[]).contains("Missing prompt"));
         assert!(usage_error(&["-m", "gpt-5.5", "x"]).contains("--via-responses"));
+        assert!(usage_error(&["-c", "1", "x"]).contains("--colors"));
+        assert!(usage_error(&["-c", "300", "x"]).contains("--colors"));
+        assert!(usage_error(&["-c", "64", "-o", "a.jpg", "x"]).contains("PNG"));
+        assert_eq!(run(&["--colors=64", "-o", "a.png", "x"]).colors, Some(64));
+        assert!(run(&["-c", "64", "--dither", "x"]).dither);
+        assert!(usage_error(&["--dither", "x"]).contains("--colors"));
+        assert_eq!(run(&["-o", "a.webp", "x"]).format, Some(Format::Webp));
         let o = run(&["--via-responses", "-m", "gpt-6-sol", "x"]);
         assert!(o.via_responses);
         assert_eq!(o.model.as_deref(), Some("gpt-6-sol"));
@@ -320,16 +367,11 @@ mod tests {
         assert_eq!(parse(&args(&["status"])).unwrap(), Command::Status { json: false });
         assert_eq!(parse(&args(&["status", "--json"])).unwrap(), Command::Status { json: true });
         assert_eq!(run(&["status", "report", "icon"]).prompt, "status report icon");
+        assert_eq!(run(&["convert this photo to night"]).prompt, "convert this photo to night");
+        assert!(matches!(parse(&args(&["convert", "a.png", "-o", "a.webp"])).unwrap(), Command::Convert(_)));
+        assert_eq!(parse(&args(&["convert", "-h"])).unwrap(), Command::ConvertHelp);
         assert_eq!(parse(&args(&["-h"])).unwrap(), Command::Help);
         assert_eq!(parse(&args(&["--version"])).unwrap(), Command::Version);
-    }
-
-    #[test]
-    fn format_problem_refuses_webp_on_direct_route_only() {
-        assert!(format_problem(Format::Png, false).is_none());
-        assert!(format_problem(Format::Jpeg, false).is_none());
-        assert!(format_problem(Format::Webp, false).unwrap().contains("--via-responses"));
-        assert!(format_problem(Format::Webp, true).is_none());
     }
 
     #[test]
@@ -344,19 +386,27 @@ mod tests {
     }
 
     #[test]
-    fn save_image_converts_jpeg_and_never_discards_mismatches() {
+    fn save_image_converts_and_never_discards_output() {
         use base64::Engine;
         let dir = crate::auth::tests::temp_dir("save");
         let png = base64::engine::general_purpose::STANDARD.decode(crate::images::tests::PNG_B64).unwrap();
 
-        let (path, warning) = save_image(&png, Format::Png, Format::Jpeg, &dir.join("a.jpg")).unwrap();
-        assert_eq!((path.clone(), warning), (dir.join("a.jpg"), None));
-        assert_eq!(images::sniff(&std::fs::read(&path).unwrap()), Some(Format::Jpeg));
+        for (name, format) in [("a.jpg", Format::Jpeg), ("a.webp", Format::Webp)] {
+            let (path, warning) = save_image(&png, Format::Png, format, None, false, &dir.join(name)).unwrap();
+            assert_eq!((path.clone(), warning), (dir.join(name), None));
+            assert_eq!(images::sniff(&std::fs::read(&path).unwrap()), Some(format));
+        }
+        let (path, warning) = save_image(&png, Format::Png, Format::Png, Some(8), true, &dir.join("q.png")).unwrap();
+        assert_eq!((path, warning), (dir.join("q.png"), None));
 
-        let (path, warning) = save_image(&png, Format::Png, Format::Webp, &dir.join("b.webp")).unwrap();
+        // Bytes that can't be decoded are still kept, under their real extension.
+        let fake = b"\x89PNG\r\n\x1a\nbroken";
+        let (path, warning) = save_image(fake, Format::Png, Format::Png, None, false, &dir.join("c.png")).unwrap();
+        assert_eq!((std::fs::read(path).unwrap(), warning), (fake.to_vec(), None), "unoptimizable PNG is kept as is");
+        let (path, warning) = save_image(fake, Format::Png, Format::Webp, None, false, &dir.join("b.webp")).unwrap();
         assert_eq!(path, dir.join("b.png"));
-        assert!(warning.unwrap().contains("saved as"));
+        assert!(warning.unwrap().contains("saved the original png"));
 
-        assert!(save_image(&png, Format::Png, Format::Png, &dir.join("b.png")).is_err(), "must not overwrite");
+        assert!(save_image(&png, Format::Png, Format::Png, None, false, &dir.join("b.png")).is_err(), "must not overwrite");
     }
 }

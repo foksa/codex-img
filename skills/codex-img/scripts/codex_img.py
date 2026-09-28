@@ -63,7 +63,8 @@ Options:
   -h, --help                Show help
   -v, --version             Show version
 
-Output is always PNG. Not supported here: -f/--format, --via-responses, --model.
+Output is always PNG. Not supported here: -f/--format, -c/--colors, --dither,
+--via-responses, --model.
 Exit codes: 0 ok, 1 error, 2 auth, 3 quota, 4 moderation, 64 usage."""
 
 
@@ -84,6 +85,9 @@ def is_size(value):
 
 
 def parse(args):
+    if args[:1] == ["convert"]:
+        raise Fail(USAGE, "`convert` needs the codex-img binary; the Python fallback can't convert images. "
+                          "Use other tools (sips, ImageMagick, Pillow), or quote a prompt that starts with \"convert\".")
     if args[:1] == ["status"] and all(a == "--json" for a in args[1:]):
         return {"command": "status", "json": len(args) > 1}
     names = {
@@ -91,7 +95,7 @@ def parse(args):
         "-s": "size", "--size": "size", "-q": "quality", "--quality": "quality",
         "-b": "background", "--background": "background", "-n": "count", "--count": "count",
     }
-    unsupported = {"-f", "--format", "--via-responses", "-m", "--model"}
+    unsupported = {"-f", "--format", "--via-responses", "-m", "--model", "-c", "--colors", "--dither"}
     flags = {"--json": "json", "--quiet": "quiet", "-h": "help", "--help": "help", "-v": "version", "--version": "version"}
     values, seen, positionals = {"image": []}, set(), []
     it = iter(args)

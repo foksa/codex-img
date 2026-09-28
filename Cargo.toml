@@ -9,7 +9,10 @@ rust-version = "1.82"
 
 [dependencies]
 base64 = "0.22"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+exoquant = "0.2"
+png = "0.18"
+oxipng = { version = "10", default-features = false }
 serde_json = { version = "1", features = ["preserve_order"] }
 ureq = { version = "2", default-features = false, features = ["tls"] }
 
