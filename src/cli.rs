@@ -246,21 +246,28 @@ fn create_parent(path: &Path) -> Result<()> {
 }
 
 /// Encode `wanted` from `bytes`; PNG output is also recompressed losslessly (best effort).
-fn encode_output(bytes: &[u8], actual: Format, wanted: Format, enc: &images::Encoding) -> Result<Vec<u8>> {
-    let converted = if images::needs_encoding(actual, wanted, enc) { images::convert(bytes, wanted, enc)? } else { bytes.to_vec() };
-    Ok(if wanted == Format::Png { images::optimize_png(&converted).unwrap_or(converted) } else { converted })
+/// Also returns the lossy quality applied, if codex-img did a lossy encode.
+fn encode_output(bytes: &[u8], actual: Format, wanted: Format, enc: &images::Encoding) -> Result<(Vec<u8>, Option<u8>)> {
+    let (converted, quality) = if images::needs_encoding(bytes, actual, wanted, enc) {
+        (images::convert(bytes, wanted, enc)?, enc.lossy_quality(wanted))
+    } else {
+        (bytes.to_vec(), None)
+    };
+    let out = if wanted == Format::Png { images::optimize_png(&converted).unwrap_or(converted) } else { converted };
+    Ok((out, quality))
 }
 
-/// `convert` subcommand: write `bytes` as `wanted` to a new file. Returns the path and pixel size.
+/// `convert` subcommand: write `bytes` as `wanted` to a new file. Returns the path, pixel size and
+/// applied lossy quality.
 /// Unlike generated images, a local input that doesn't fully decode is an error, not something to
 /// copy through: the fast paths (same format, best-effort optimization) would otherwise pass it on.
-pub fn save_converted(bytes: &[u8], wanted: Format, enc: &images::Encoding, path: &Path) -> Result<(PathBuf, (u32, u32))> {
+pub fn save_converted(bytes: &[u8], wanted: Format, enc: &images::Encoding, path: &Path) -> Result<(PathBuf, (u32, u32), Option<u8>)> {
     let actual = images::sniff(bytes).ok_or_else(|| Error::other("Input is not a PNG, JPEG or WebP image."))?;
     let dimensions = images::validate(bytes)?;
-    let out = encode_output(bytes, actual, wanted, enc)?;
+    let (out, quality) = encode_output(bytes, actual, wanted, enc)?;
     create_parent(path)?;
     write_new(path, &out)?;
-    Ok((path.to_path_buf(), dimensions))
+    Ok((path.to_path_buf(), dimensions, quality))
 }
 
 fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -275,21 +282,29 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
 /// Write the image as `wanted`, converting (and quantizing, with `colors`) when needed; PNG output is
 /// also recompressed losslessly. If the bytes can't be converted, keep them under their real
 /// extension: the quota is already spent.
-pub fn save_image(bytes: &[u8], actual: Format, wanted: Format, enc: &images::Encoding, path: &Path) -> Result<(PathBuf, Option<String>)> {
+pub struct Saved {
+    pub path: PathBuf,
+    pub warning: Option<String>,
+    /// Lossy quality codex-img applied (JPEG or lossy WebP), not the backend's quality hint.
+    pub output_quality: Option<u8>,
+}
+
+pub fn save_image(bytes: &[u8], actual: Format, wanted: Format, enc: &images::Encoding, path: &Path) -> Result<Saved> {
     create_parent(path)?;
     let error = match encode_output(bytes, actual, wanted, enc) {
-        Ok(out) => {
+        Ok((out, output_quality)) => {
             write_new(path, &out)?;
-            return Ok((path.to_path_buf(), None));
+            return Ok(Saved { path: path.to_path_buf(), warning: None, output_quality });
         }
         Err(e) => e.message,
     };
     let fallback = path.with_extension(actual.extension());
     write_new(&fallback, bytes)?;
-    Ok((fallback.clone(), Some(format!("{error}; saved the original {} as {}", actual.name(), fallback.display()))))
+    let warning = format!("{error}; saved the original {} as {}", actual.name(), fallback.display());
+    Ok(Saved { path: fallback, warning: Some(warning), output_quality: None })
 }
 
-pub fn describe(path: &Path, image: &Generated) -> Value {
+pub fn describe(path: &Path, image: &Generated, output_quality: Option<u8>) -> Value {
     let format = path.extension().and_then(|e| e.to_str()).and_then(Format::parse).unwrap_or(image.format);
     let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(image.bytes.len() as u64);
     let mut out = Map::new();
@@ -307,6 +322,7 @@ pub fn describe(path: &Path, image: &Generated) -> Value {
     put("routingModel", image.routing_model.as_ref().map(|v| json!(v)));
     put("size", reported.size.as_ref().map(|v| json!(v)));
     put("quality", reported.quality.as_ref().map(|v| json!(v)));
+    put("outputQuality", output_quality.map(|q| json!(q)));
     put("background", reported.background.as_ref().map(|v| json!(v)));
     put("revisedPrompt", image.revised_prompt.as_ref().map(|v| json!(v)));
     put("generationId", Some(json!(image.id)));
@@ -407,20 +423,22 @@ mod tests {
         let png = base64::engine::general_purpose::STANDARD.decode(crate::images::tests::PNG_B64).unwrap();
 
         for (name, format) in [("a.jpg", Format::Jpeg), ("a.webp", Format::Webp)] {
-            let (path, warning) = save_image(&png, Format::Png, format, &images::Encoding::default(), &dir.join(name)).unwrap();
-            assert_eq!((path.clone(), warning), (dir.join(name), None));
+            let saved = save_image(&png, Format::Png, format, &images::Encoding::default(), &dir.join(name)).unwrap();
+            let path = saved.path.clone();
+            assert_eq!((saved.path, saved.warning), (dir.join(name), None));
+            assert_eq!(saved.output_quality, Some(if format == Format::Jpeg { 90 } else { 80 }));
             assert_eq!(images::sniff(&std::fs::read(&path).unwrap()), Some(format));
         }
-        let (path, warning) = save_image(&png, Format::Png, Format::Png, &images::Encoding { colors: Some(8), dither: true, ..Default::default() }, &dir.join("q.png")).unwrap();
-        assert_eq!((path, warning), (dir.join("q.png"), None));
+        let saved = save_image(&png, Format::Png, Format::Png, &images::Encoding { colors: Some(8), dither: true, ..Default::default() }, &dir.join("q.png")).unwrap();
+        assert_eq!((saved.path, saved.warning, saved.output_quality), (dir.join("q.png"), None, None));
 
         // Bytes that can't be decoded are still kept, under their real extension.
         let fake = b"\x89PNG\r\n\x1a\nbroken";
-        let (path, warning) = save_image(fake, Format::Png, Format::Png, &images::Encoding::default(), &dir.join("c.png")).unwrap();
-        assert_eq!((std::fs::read(path).unwrap(), warning), (fake.to_vec(), None), "unoptimizable PNG is kept as is");
-        let (path, warning) = save_image(fake, Format::Png, Format::Webp, &images::Encoding::default(), &dir.join("b.webp")).unwrap();
-        assert_eq!(path, dir.join("b.png"));
-        assert!(warning.unwrap().contains("saved the original png"));
+        let saved = save_image(fake, Format::Png, Format::Png, &images::Encoding::default(), &dir.join("c.png")).unwrap();
+        assert_eq!((std::fs::read(saved.path).unwrap(), saved.warning), (fake.to_vec(), None), "unoptimizable PNG is kept as is");
+        let saved = save_image(fake, Format::Png, Format::Webp, &images::Encoding::default(), &dir.join("b.webp")).unwrap();
+        assert_eq!((saved.path, saved.output_quality), (dir.join("b.png"), None));
+        assert!(saved.warning.unwrap().contains("saved the original png"));
 
         assert!(save_image(&png, Format::Png, Format::Png, &images::Encoding::default(), &dir.join("b.png")).is_err(), "must not overwrite");
     }

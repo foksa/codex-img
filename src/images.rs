@@ -161,10 +161,43 @@ impl Encoding {
         Ok(())
     }
 
-    /// Whether bytes already in `format` can be written as they are.
-    fn is_passthrough(&self, format: Format) -> bool {
-        *self == Encoding::default() || (format == Format::Png && self.colors.is_none())
+    /// Whether `bytes`, already in `format`, satisfy these settings as they are. Re-encoding a
+    /// lossy file only loses more, so it happens when the settings ask for something the file
+    /// isn't: a palette, an explicit quality, or the other kind of WebP (lossy is the default).
+    fn is_satisfied_by(&self, bytes: &[u8], format: Format) -> bool {
+        match format {
+            Format::Png => self.colors.is_none(),
+            Format::Jpeg => self.quality.is_none(),
+            Format::Webp => self.quality.is_none() && webp_is_lossless(bytes) == Some(self.lossless),
+        }
     }
+
+    /// The quality a lossy encode of `format` uses with these settings, or None if it's lossless.
+    pub fn lossy_quality(&self, format: Format) -> Option<u8> {
+        match format {
+            Format::Jpeg => Some(self.quality.unwrap_or(JPEG_QUALITY)),
+            Format::Webp if !self.lossless => Some(self.quality.unwrap_or(WEBP_QUALITY)),
+            _ => None,
+        }
+    }
+}
+
+/// Lossless (VP8L) or lossy (VP8) WebP, from the RIFF chunks; None if neither chunk is found.
+/// Extended files (VP8X) put ICCP/ALPH/... chunks first, so walk the chunk list.
+fn webp_is_lossless(bytes: &[u8]) -> Option<bool> {
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WEBP" {
+        return None;
+    }
+    let mut at = 12;
+    while at + 8 <= bytes.len() {
+        let size = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().ok()?) as usize;
+        match &bytes[at..at + 4] {
+            b"VP8L" => return Some(true),
+            b"VP8 " => return Some(false),
+            _ => at = at.checked_add(8 + size + (size & 1))?,
+        }
+    }
+    None
 }
 
 /// Decode `bytes` (PNG, JPEG or WebP) and re-encode as `wanted`. JPEG has no alpha, so transparency
@@ -181,8 +214,8 @@ pub fn convert(bytes: &[u8], wanted: Format, enc: &Encoding) -> Result<Vec<u8>> 
 }
 
 /// Whether `bytes` in `actual` need re-encoding to satisfy `wanted` and `enc`.
-pub fn needs_encoding(actual: Format, wanted: Format, enc: &Encoding) -> bool {
-    actual != wanted || !enc.is_passthrough(wanted)
+pub fn needs_encoding(bytes: &[u8], actual: Format, wanted: Format, enc: &Encoding) -> bool {
+    actual != wanted || !enc.is_satisfied_by(bytes, wanted)
 }
 
 /// Fully decode the image (header checks alone miss damaged pixel data); returns its pixel size.
@@ -341,6 +374,21 @@ pub(crate) mod tests {
         assert_eq!((decoded.get_pixel(0, 0).0[3], decoded.get_pixel(63, 63).0[3]), (0, 255), "lossy WebP keeps alpha");
         let low = convert(&png, Format::Webp, &Encoding { quality: Some(10), ..Default::default() }).unwrap();
         assert!(low.len() < lossy.len(), "lower quality must be smaller: {} vs {}", low.len(), lossy.len());
+    }
+
+    #[test]
+    fn webp_passthrough_only_when_the_file_already_matches() {
+        let png = gradient();
+        let lossless = convert(&png, Format::Webp, &Encoding { lossless: true, ..Default::default() }).unwrap();
+        let lossy = convert(&png, Format::Webp, &Encoding::default()).unwrap();
+        assert_eq!((webp_is_lossless(&lossless), webp_is_lossless(&lossy)), (Some(true), Some(false)));
+        let default = Encoding::default();
+        assert!(needs_encoding(&lossless, Format::Webp, Format::Webp, &default), "default is lossy: re-encode lossless input");
+        assert!(!needs_encoding(&lossy, Format::Webp, Format::Webp, &default), "lossy input is already lossy");
+        assert!(!needs_encoding(&lossless, Format::Webp, Format::Webp, &Encoding { lossless: true, ..default }));
+        assert!(needs_encoding(&lossy, Format::Webp, Format::Webp, &Encoding { quality: Some(50), ..default }));
+        assert!(needs_encoding(b"RIFF\x04\0\0\0WEBP", Format::Webp, Format::Webp, &default), "unknown kind: re-encode");
+        assert_eq!((default.lossy_quality(Format::Webp), default.lossy_quality(Format::Jpeg), default.lossy_quality(Format::Png)), (Some(80), Some(90), None));
     }
 
     #[test]

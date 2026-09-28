@@ -143,7 +143,7 @@ fn convert_one(input: &Path, opts: &ConvertOptions) -> Result<serde_json::Value>
     if same_file(&target, input) {
         return Err(Error::usage(format!("Output would overwrite the input {}; choose another -o.", input.display())));
     }
-    let (path, dimensions) = cli::save_converted(&bytes, format, &opts.encoding, &target)?;
+    let (path, dimensions, output_quality) = cli::save_converted(&bytes, format, &opts.encoding, &target)?;
     let written = std::fs::metadata(&path).map(|m| m.len()).unwrap_or_default();
     let mut info = json!({
         "path": path.display().to_string(),
@@ -157,8 +157,9 @@ fn convert_one(input: &Path, opts: &ConvertOptions) -> Result<serde_json::Value>
     if let Some(colors) = opts.encoding.colors {
         info["colors"] = json!(colors);
     }
-    if let Some(quality) = opts.encoding.quality {
-        info["quality"] = json!(quality);
+    // Same key as generation's --json: the lossy quality actually applied, defaults included.
+    if let Some(quality) = output_quality {
+        info["outputQuality"] = json!(quality);
     }
     Ok(info)
 }
