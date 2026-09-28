@@ -138,6 +138,14 @@ fn convert_one(input: &Path, opts: &ConvertOptions) -> Result<serde_json::Value>
     let started = Instant::now();
     let (bytes, actual) = read_image(input)?;
     let format = opts.format.unwrap_or(actual);
+    // parse() can only check -f/-o; without them the output takes the input's format.
+    if opts.colors.is_some() && format != Format::Png {
+        return Err(Error::usage(format!(
+            "--colors only applies to PNG output, and {} would stay {}; add -f png.",
+            input.display(),
+            format.name()
+        )));
+    }
     let target = target_path(input, opts.output.as_deref(), format);
     if same_file(&target, input) {
         return Err(Error::usage(format!("Output would overwrite the input {}; choose another -o.", input.display())));
@@ -209,6 +217,44 @@ mod tests {
         assert!(usage_error(&["a.png", "-c", "8", "-f", "jpeg"]).contains("PNG"));
         assert!(usage_error(&["a.png", "--dither"]).contains("--colors"));
         assert!(usage_error(&["a.png", "-n", "2"]).contains("Unknown convert option"));
+    }
+
+    fn png_file(dir: &Path, name: &str) -> PathBuf {
+        let image = image::RgbImage::from_fn(32, 32, |x, y| image::Rgb([(x * 8) as u8, (y * 8) as u8, 90]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, out.into_inner()).unwrap();
+        path
+    }
+
+    #[test]
+    fn colors_is_rejected_for_non_png_inputs_without_explicit_format() {
+        let dir = crate::auth::tests::temp_dir("convert-colors");
+        let png = png_file(&dir, "a.png");
+        let jpeg = dir.join("a.jpg");
+        let opts = parse(&args(&[&png.display().to_string(), "-f", "jpeg", "--quiet"])).unwrap().unwrap();
+        assert_eq!(run(&opts), 0);
+        // No -f and no -o: the output format is the input's (JPEG), so --colors can't apply.
+        let opts = parse(&args(&[&jpeg.display().to_string(), "-c", "4", "--quiet"])).unwrap().unwrap();
+        assert_eq!(run(&opts), 64);
+        assert!(!dir.join("a.min.jpg").exists(), "nothing may be written");
+    }
+
+    #[test]
+    fn damaged_png_is_rejected_not_copied() {
+        let dir = crate::auth::tests::temp_dir("convert-damaged");
+        let path = png_file(&dir, "bad.png");
+        let mut bytes = std::fs::read(&path).unwrap();
+        let idat = bytes.windows(4).position(|w| w == b"IDAT").unwrap();
+        bytes[idat + 10] ^= 0xff; // corrupt compressed pixel data, header stays valid
+        std::fs::write(&path, &bytes).unwrap();
+        for extra in [&[][..], &["-f", "webp"][..]] {
+            let mut list = vec![path.to_str().unwrap(), "--quiet"];
+            list.extend_from_slice(extra);
+            assert_eq!(run(&parse(&args(&list)).unwrap().unwrap()), 1, "{extra:?}");
+        }
+        assert!(!dir.join("bad.min.png").exists() && !dir.join("bad.webp").exists());
     }
 
     #[test]

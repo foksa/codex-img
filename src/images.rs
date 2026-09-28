@@ -138,12 +138,10 @@ pub fn convert(bytes: &[u8], wanted: Format, colors: Option<u16>, dither: bool) 
     }
 }
 
-pub fn dimensions(bytes: &[u8]) -> Result<(u32, u32)> {
-    image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|e| Error::other(e.to_string()))?
-        .into_dimensions()
-        .map_err(|e| Error::other(format!("Could not read image size: {e}")))
+/// Fully decode the image (header checks alone miss damaged pixel data); returns its pixel size.
+pub fn validate(bytes: &[u8]) -> Result<(u32, u32)> {
+    let image = image::load_from_memory(bytes).map_err(|e| Error::other(format!("Input image is damaged or unsupported: {e}")))?;
+    Ok((image.width(), image.height()))
 }
 
 /// Lossless PNG recompression (oxipng): typically halves backend PNGs without touching a pixel.
