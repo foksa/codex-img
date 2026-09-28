@@ -6,6 +6,7 @@ pub const MAX_EDIT_IMAGES: usize = 5;
 const MAX_INPUT_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_TOTAL_INPUT_BYTES: u64 = 50 * 1024 * 1024;
 const JPEG_QUALITY: u8 = 90;
+const WEBP_QUALITY: u8 = 80;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -125,17 +126,63 @@ pub fn load_input_images(paths: &[String]) -> Result<Vec<InputImage>> {
     Ok(images)
 }
 
+/// How to encode local output. Kept in one place so every entry point validates it the same way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Encoding {
+    /// Palette size for PNG quantization.
+    pub colors: Option<u16>,
+    pub dither: bool,
+    /// 1-100 for JPEG and lossy WebP. Defaults: JPEG 90, WebP 80.
+    pub quality: Option<u8>,
+    /// Lossless WebP instead of lossy.
+    pub lossless: bool,
+}
+
+impl Encoding {
+    /// Reject settings the output format can't use. With `None` (format not known yet) only the
+    /// format-independent rules are checked; call again once the format is resolved.
+    pub fn check(&self, format: Option<Format>) -> Result<()> {
+        if self.dither && self.colors.is_none() {
+            return Err(Error::usage("--dither only applies with --colors."));
+        }
+        if self.lossless && self.quality.is_some() {
+            return Err(Error::usage("--lossless and --output-quality can't be combined."));
+        }
+        let Some(format) = format else { return Ok(()) };
+        if self.colors.is_some() && format != Format::Png {
+            return Err(Error::usage(format!("--colors only applies to PNG output, not {}; add -f png.", format.name())));
+        }
+        if self.lossless && format != Format::Webp {
+            return Err(Error::usage(format!("--lossless only applies to WebP output, not {}.", format.name())));
+        }
+        if self.quality.is_some() && format == Format::Png {
+            return Err(Error::usage("--output-quality applies to JPEG and WebP; PNG is always lossless (use --colors to shrink it)."));
+        }
+        Ok(())
+    }
+
+    /// Whether bytes already in `format` can be written as they are.
+    fn is_passthrough(&self, format: Format) -> bool {
+        *self == Encoding::default() || (format == Format::Png && self.colors.is_none())
+    }
+}
+
 /// Decode `bytes` (PNG, JPEG or WebP) and re-encode as `wanted`. JPEG has no alpha, so transparency
-/// is flattened onto white. `colors` reduces a PNG to an indexed palette of at most that many colours.
-pub fn convert(bytes: &[u8], wanted: Format, colors: Option<u16>, dither: bool) -> Result<Vec<u8>> {
+/// is flattened onto white. WebP is lossy unless `lossless` is set; both keep transparency.
+pub fn convert(bytes: &[u8], wanted: Format, enc: &Encoding) -> Result<Vec<u8>> {
     let failed = |e: String| Error::other(format!("Could not convert image to {}: {e}", wanted.name()));
     let rgba = image::load_from_memory(bytes).map_err(|e| failed(e.to_string()))?.to_rgba8();
-    match (wanted, colors) {
-        (Format::Png, Some(colors)) => quantize_png(&rgba, colors, dither).map_err(failed),
-        (Format::Png, None) => encode(&rgba, image::ImageFormat::Png).map_err(failed),
-        (Format::Jpeg, _) => encode_jpeg(&rgba).map_err(failed),
-        (Format::Webp, _) => encode(&rgba, image::ImageFormat::WebP).map_err(failed),
+    match (wanted, enc.colors) {
+        (Format::Png, Some(colors)) => quantize_png(&rgba, colors, enc.dither).map_err(failed),
+        (Format::Png, None) => encode_png(&rgba).map_err(failed),
+        (Format::Jpeg, _) => encode_jpeg(&rgba, enc.quality.unwrap_or(JPEG_QUALITY)).map_err(failed),
+        (Format::Webp, _) => encode_webp(&rgba, enc.lossless, enc.quality.unwrap_or(WEBP_QUALITY)).map_err(failed),
     }
+}
+
+/// Whether `bytes` in `actual` need re-encoding to satisfy `wanted` and `enc`.
+pub fn needs_encoding(actual: Format, wanted: Format, enc: &Encoding) -> bool {
+    actual != wanted || !enc.is_passthrough(wanted)
 }
 
 /// Fully decode the image (header checks alone miss damaged pixel data); returns its pixel size.
@@ -151,26 +198,52 @@ pub fn optimize_png(png: &[u8]) -> Result<Vec<u8>> {
         .map_err(|e| Error::other(format!("Could not optimize PNG: {e}")))
 }
 
-/// Lossless encode, dropping the alpha channel when every pixel is opaque (smaller files).
-fn encode(rgba: &image::RgbaImage, format: image::ImageFormat) -> std::result::Result<Vec<u8>, String> {
-    let image = if rgba.pixels().all(|p| p.0[3] == 255) {
+fn is_opaque(rgba: &image::RgbaImage) -> bool {
+    rgba.pixels().all(|p| p.0[3] == 255)
+}
+
+/// Lossless PNG, dropping the alpha channel when every pixel is opaque (smaller files).
+fn encode_png(rgba: &image::RgbaImage) -> std::result::Result<Vec<u8>, String> {
+    let image = if is_opaque(rgba) {
         image::DynamicImage::ImageRgb8(image::DynamicImage::ImageRgba8(rgba.clone()).to_rgb8())
     } else {
         image::DynamicImage::ImageRgba8(rgba.clone())
     };
     let mut out = std::io::Cursor::new(Vec::new());
-    image.write_to(&mut out, format).map_err(|e| e.to_string())?;
+    image.write_to(&mut out, image::ImageFormat::Png).map_err(|e| e.to_string())?;
     Ok(out.into_inner())
 }
 
-fn encode_jpeg(rgba: &image::RgbaImage) -> std::result::Result<Vec<u8>, String> {
+/// WebP through libwebp: lossy at `quality`, or lossless. Alpha is kept either way (lossy WebP
+/// stores it losslessly by default). `exact` stops lossless mode from zeroing the colour of fully
+/// transparent pixels, so --lossless really keeps every pixel. The webp crate's `encode*` helpers
+/// unwrap internally, which would abort the process (panic = "abort"); encode_advanced doesn't.
+fn encode_webp(rgba: &image::RgbaImage, lossless: bool, quality: u8) -> std::result::Result<Vec<u8>, String> {
+    let (width, height) = rgba.dimensions();
+    let rgb;
+    let encoder = if is_opaque(rgba) {
+        rgb = image::DynamicImage::ImageRgba8(rgba.clone()).to_rgb8();
+        webp::Encoder::from_rgb(rgb.as_raw(), width, height)
+    } else {
+        webp::Encoder::from_rgba(rgba.as_raw(), width, height)
+    };
+    let mut config = webp::WebPConfig::new().map_err(|_| "could not initialise the WebP encoder".to_string())?;
+    config.lossless = i32::from(lossless);
+    config.exact = i32::from(lossless);
+    config.alpha_compression = i32::from(!lossless);
+    config.quality = f32::from(quality);
+    let memory = encoder.encode_advanced(&config).map_err(|e| format!("WebP encoding failed ({e:?})"))?;
+    Ok(memory.to_vec())
+}
+
+fn encode_jpeg(rgba: &image::RgbaImage, quality: u8) -> std::result::Result<Vec<u8>, String> {
     let rgb = image::RgbImage::from_fn(rgba.width(), rgba.height(), |x, y| {
         let [r, g, b, a] = rgba.get_pixel(x, y).0;
         let blend = |c: u8| ((u16::from(c) * u16::from(a) + 255 * (255 - u16::from(a))) / 255) as u8;
         image::Rgb([blend(r), blend(g), blend(b)])
     });
     let mut out = Vec::new();
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, JPEG_QUALITY).encode_image(&rgb).map_err(|e| e.to_string())?;
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality).encode_image(&rgb).map_err(|e| e.to_string())?;
     Ok(out)
 }
 
@@ -242,7 +315,7 @@ pub(crate) mod tests {
     #[test]
     fn converts_png_to_jpeg_on_white() {
         let png = base64::engine::general_purpose::STANDARD.decode(PNG_B64).unwrap();
-        let jpeg = convert(&png, Format::Jpeg, None, false).unwrap();
+        let jpeg = convert(&png, Format::Jpeg, &Encoding::default()).unwrap();
         assert_eq!(sniff(&jpeg), Some(Format::Jpeg));
         let pixel = image::load_from_memory(&jpeg).unwrap().to_rgb8().get_pixel(0, 0).0;
         assert!(pixel.iter().all(|&c| c > 245), "transparent pixel should become white, got {pixel:?}");
@@ -256,19 +329,38 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn converts_png_to_lossless_webp() {
+    fn converts_png_to_lossy_and_lossless_webp() {
         let png = gradient();
-        let webp = convert(&png, Format::Webp, None, false).unwrap();
-        assert_eq!(sniff(&webp), Some(Format::Webp));
-        let (a, b) = (image::load_from_memory(&png).unwrap().to_rgba8(), image::load_from_memory(&webp).unwrap().to_rgba8());
-        assert_eq!(a, b, "webp output must be lossless");
+        let original = image::load_from_memory(&png).unwrap().to_rgba8();
+        let lossless = convert(&png, Format::Webp, &Encoding { lossless: true, ..Default::default() }).unwrap();
+        assert_eq!(image::load_from_memory(&lossless).unwrap().to_rgba8(), original, "--lossless must not change pixels");
+
+        let lossy = convert(&png, Format::Webp, &Encoding::default()).unwrap();
+        assert_eq!(sniff(&lossy), Some(Format::Webp));
+        let decoded = image::load_from_memory(&lossy).unwrap().to_rgba8();
+        assert_eq!((decoded.get_pixel(0, 0).0[3], decoded.get_pixel(63, 63).0[3]), (0, 255), "lossy WebP keeps alpha");
+        let low = convert(&png, Format::Webp, &Encoding { quality: Some(10), ..Default::default() }).unwrap();
+        assert!(low.len() < lossy.len(), "lower quality must be smaller: {} vs {}", low.len(), lossy.len());
+    }
+
+    #[test]
+    fn encoding_check_rejects_settings_the_format_cannot_use() {
+        let enc = |colors, dither, quality, lossless| Encoding { colors, dither, quality, lossless };
+        assert!(enc(None, true, None, false).check(None).unwrap_err().message.contains("--dither"));
+        assert!(enc(None, false, Some(80), true).check(None).unwrap_err().message.contains("combined"));
+        assert!(enc(Some(8), false, None, false).check(Some(Format::Jpeg)).unwrap_err().message.contains("PNG"));
+        assert!(enc(None, false, None, true).check(Some(Format::Png)).unwrap_err().message.contains("WebP"));
+        assert!(enc(None, false, Some(80), false).check(Some(Format::Png)).unwrap_err().message.contains("--colors"));
+        assert!(enc(None, false, Some(80), false).check(Some(Format::Webp)).is_ok());
+        assert!(enc(Some(64), true, None, false).check(Some(Format::Png)).is_ok());
     }
 
     #[test]
     fn quantizes_png_to_a_palette_and_keeps_alpha() {
         let png = gradient();
-        assert_eq!(sniff(&convert(&png, Format::Png, Some(16), true).unwrap()), Some(Format::Png));
-        let small = convert(&png, Format::Png, Some(16), false).unwrap();
+        let enc = |colors, dither| Encoding { colors: Some(colors), dither, ..Default::default() };
+        assert_eq!(sniff(&convert(&png, Format::Png, &enc(16, true)).unwrap()), Some(Format::Png));
+        let small = convert(&png, Format::Png, &enc(16, false)).unwrap();
         let decoder = png::Decoder::new(std::io::Cursor::new(&small));
         let reader = decoder.read_info().unwrap();
         let info = reader.info();
@@ -279,7 +371,7 @@ pub(crate) mod tests {
         assert_eq!((decoded.get_pixel(0, 0).0[3], decoded.get_pixel(63, 63).0[3]), (0, 255));
 
         // Few distinct colours are kept exactly, with no dithering.
-        let exact = convert(&base64::engine::general_purpose::STANDARD.decode(PNG_B64).unwrap(), Format::Png, Some(256), false).unwrap();
+        let exact = convert(&base64::engine::general_purpose::STANDARD.decode(PNG_B64).unwrap(), Format::Png, &enc(256, false)).unwrap();
         assert_eq!(image::load_from_memory(&exact).unwrap().to_rgba8().get_pixel(0, 0).0[3], 0);
     }
 

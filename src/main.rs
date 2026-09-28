@@ -76,6 +76,8 @@ fn generate(mut opts: Options) -> Result<i32> {
         return Err(Error::usage("Image prompt must contain 1 to 32,000 characters."));
     }
     let format = opts.format.unwrap_or(Format::Png);
+    // parse() couldn't check against the default format; do it before spending quota.
+    opts.encoding.check(Some(format))?;
     let quiet = opts.quiet;
     let log = move |message: &str| {
         if !quiet {
@@ -114,7 +116,7 @@ fn generate(mut opts: Options) -> Result<i32> {
                 };
                 let image = backend.generate(&request, &credentials, &|stage| log(&format!("{tag}{stage}")))?;
                 let target = cli::output_path(opts.output.as_deref(), format, &image.id, index, count, util::now_secs());
-                let (path, warning) = cli::save_image(&image.bytes, image.format, format, opts.colors, opts.dither, &target)?;
+                let (path, warning) = cli::save_image(&image.bytes, image.format, format, &opts.encoding, &target)?;
                 if let Some(warning) = warning {
                     eprintln!("codex-img: {tag}warning: {warning}");
                 }

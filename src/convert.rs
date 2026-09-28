@@ -14,8 +14,7 @@ pub struct ConvertOptions {
     pub inputs: Vec<String>,
     pub output: Option<String>,
     pub format: Option<Format>,
-    pub colors: Option<u16>,
-    pub dither: bool,
+    pub encoding: images::Encoding,
     pub json: bool,
     pub quiet: bool,
 }
@@ -34,19 +33,21 @@ Options:
                             input's format)
   -c, --colors <n>          Quantize PNG output to a palette of n colours (2-256)
       --dither              Dither when quantizing
+      --output-quality <n>  1-100 for jpeg (default 90) and lossy webp (default 80)
+      --lossless            Lossless webp instead of lossy
       --json                Print one JSON object per file to stdout
       --quiet               No progress on stderr
 
 PNG output is always recompressed losslessly. Existing files are never overwritten.
 
 Examples:
-  codex-img convert hero.png -o hero.webp
+  codex-img convert hero.png -o hero.webp     # lossy, quality 80
   codex-img convert icon.png -c 64            # -> icon.min.png
   codex-img convert shots/*.png -f jpeg -o out/"#
 }
 
 pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
-    let mut opts = ConvertOptions { inputs: Vec::new(), output: None, format: None, colors: None, dither: false, json: false, quiet: false };
+    let mut opts = ConvertOptions { inputs: Vec::new(), output: None, format: None, encoding: images::Encoding::default(), json: false, quiet: false };
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         if arg == "--" {
@@ -67,8 +68,10 @@ pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
             "-f" | "--format" => {
                 opts.format = Some(Format::parse(&value()?).ok_or_else(|| Error::usage("--format must be one of: png, jpeg, webp"))?)
             }
-            "-c" | "--colors" => opts.colors = Some(cli::parse_colors(&value()?)?),
-            "--dither" => opts.dither = true,
+            "-c" | "--colors" => opts.encoding.colors = Some(cli::parse_colors(&value()?)?),
+            "--dither" => opts.encoding.dither = true,
+            "--output-quality" => opts.encoding.quality = Some(cli::parse_output_quality(&value()?)?),
+            "--lossless" => opts.encoding.lossless = true,
             "--json" => opts.json = true,
             "--quiet" => opts.quiet = true,
             "-h" | "--help" => return Ok(None),
@@ -86,12 +89,8 @@ pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
         let ext = Path::new(opts.output.as_deref().unwrap_or_default()).extension().and_then(|e| e.to_str()).unwrap_or_default();
         opts.format = Some(Format::parse(ext).ok_or_else(|| Error::usage("Can't tell the output format from -o; add -f png|jpeg|webp."))?);
     }
-    if opts.colors.is_some() && opts.format.is_some_and(|f| f != Format::Png) {
-        return Err(Error::usage("--colors only applies to PNG output."));
-    }
-    if opts.dither && opts.colors.is_none() {
-        return Err(Error::usage("--dither only applies with --colors."));
-    }
+    // Without -f/-o the format comes from each input; convert_one checks again then.
+    opts.encoding.check(opts.format)?;
     Ok(Some(opts))
 }
 
@@ -139,18 +138,12 @@ fn convert_one(input: &Path, opts: &ConvertOptions) -> Result<serde_json::Value>
     let (bytes, actual) = read_image(input)?;
     let format = opts.format.unwrap_or(actual);
     // parse() can only check -f/-o; without them the output takes the input's format.
-    if opts.colors.is_some() && format != Format::Png {
-        return Err(Error::usage(format!(
-            "--colors only applies to PNG output, and {} would stay {}; add -f png.",
-            input.display(),
-            format.name()
-        )));
-    }
+    opts.encoding.check(Some(format)).map_err(|e| Error::usage(format!("{}: {}", input.display(), e.message)))?;
     let target = target_path(input, opts.output.as_deref(), format);
     if same_file(&target, input) {
         return Err(Error::usage(format!("Output would overwrite the input {}; choose another -o.", input.display())));
     }
-    let (path, dimensions) = cli::save_converted(&bytes, format, opts.colors, opts.dither, &target)?;
+    let (path, dimensions) = cli::save_converted(&bytes, format, &opts.encoding, &target)?;
     let written = std::fs::metadata(&path).map(|m| m.len()).unwrap_or_default();
     let mut info = json!({
         "path": path.display().to_string(),
@@ -161,8 +154,11 @@ fn convert_one(input: &Path, opts: &ConvertOptions) -> Result<serde_json::Value>
         "size": format!("{}x{}", dimensions.0, dimensions.1),
         "durationMs": started.elapsed().as_millis() as u64,
     });
-    if let Some(colors) = opts.colors {
+    if let Some(colors) = opts.encoding.colors {
         info["colors"] = json!(colors);
+    }
+    if let Some(quality) = opts.encoding.quality {
+        info["quality"] = json!(quality);
     }
     Ok(info)
 }
@@ -209,13 +205,15 @@ mod tests {
     fn parses_and_validates_options() {
         let o = parse(&args(&["a.png", "-o", "a.webp"])).unwrap().unwrap();
         assert_eq!((o.inputs, o.format), (vec!["a.png".to_string()], Some(Format::Webp)));
-        assert_eq!(parse(&args(&["a.png", "--colors=32"])).unwrap().unwrap().colors, Some(32));
+        assert_eq!(parse(&args(&["a.png", "--colors=32"])).unwrap().unwrap().encoding.colors, Some(32));
         assert_eq!(parse(&args(&["--help"])).unwrap(), None);
         assert!(usage_error(&[]).contains("at least one input"));
         assert!(usage_error(&["a.png", "b.png", "-o", "c.png"]).contains("directory"));
         assert!(usage_error(&["a.png", "-o", "c.gif"]).contains("-f"));
         assert!(usage_error(&["a.png", "-c", "8", "-f", "jpeg"]).contains("PNG"));
         assert!(usage_error(&["a.png", "--dither"]).contains("--colors"));
+        assert!(usage_error(&["a.png", "-o", "b.png", "--output-quality", "50"]).contains("PNG"));
+        assert!(usage_error(&["a.png", "-f", "jpeg", "--lossless"]).contains("WebP"));
         assert!(usage_error(&["a.png", "-n", "2"]).contains("Unknown convert option"));
     }
 

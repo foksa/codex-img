@@ -24,7 +24,7 @@ codex-img convert <file>... [-o <path>] [-f fmt] [-c n] --json   # convert exist
 | `-s` | `1536x1024` (landscape), `1024x1536` (portrait), `auto`; a hint for the shape, not exact pixels |
 | `-b` | `transparent` for real alpha (PNG only), `opaque`, `auto` |
 | `-q` | `low` \| `medium` \| `high` \| `auto`; a hint, and the subscription caps it at medium |
-| `-f` | `png` (native), `jpeg` (converted locally; transparency becomes white) or `webp` (lossless, keeps transparency). Use PNG unless the user wants another format. |
+| `-f` | `png` (native), `jpeg` (converted locally; transparency becomes white) or `webp` (lossy, keeps transparency; tune with `--output-quality 1-100`, default 80, or use `--lossless` for exact pixels). Use PNG unless the user wants another format; for images going on a website, lossy `webp` is usually the smallest by far (a 946 KB PNG became 7.5 KB). |
 | `-c` | (PNG is always recompressed losslessly, so plain PNG files are already about half the backend's size.) Quantize PNG to a palette of 2–256 colours, keeping transparency. For icons, stickers, logos and flat illustrations meant for the web or an app, `-c 64` to `-c 256` usually cuts the file 10x or more with no visible change. Don't use it for photos or soft gradients; if banding shows, raise the count or add `--dither`. |
 
 Use `-` as the prompt to read it from stdin. That avoids shell quoting problems for long prompts:
@@ -39,7 +39,7 @@ EOF
 
 `codex-img convert` handles PNG, JPEG and WebP files locally, with no login and no quota. Use it instead of ImageMagick or Pillow for format changes and size reduction, including on images you generated earlier. Don't call the image model just to change the format.
 
-- `codex-img convert in.png -o out.webp`, or `-f jpeg`, changes the format.
+- `codex-img convert in.png -o out.webp`, or `-f jpeg`, changes the format. Add `--output-quality N` to trade size for quality.
 - `codex-img convert icon.png -c 64` writes `icon.min.png`, a palette PNG, for flat art.
 - `codex-img convert in.png` writes `in.min.png`, lossless recompression only.
 - With several inputs, `-o` must be a directory ending in `/`.
@@ -74,7 +74,7 @@ python3 <skill-dir>/scripts/codex_img.py "<prompt>" -o <path>.png --json
 
 Its limits:
 - **PNG only.** It refuses `-f`, and any `-o` extension other than `.png`, before spending quota. If the user wants JPEG or WebP, or exact pixel dimensions, generate a PNG and then convert or resize it yourself (`sips`, ImageMagick, Pillow).
-- **No `-c`/`--dither` quantization, no `convert` subcommand, and no `--via-responses` or `--model`.**
+- **No `-c`/`--dither` quantization, no `--output-quality`/`--lossless`, no `convert` subcommand, and no `--via-responses` or `--model`.**
 
 If `python3` is missing as well, tell the user rather than trying another image service. They can install the binary from the project's releases page.
 
