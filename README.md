@@ -90,7 +90,7 @@ codex-img convert photo.png                      # -> photo.min.png, lossless re
 codex-img convert shots/*.png -f jpeg -o out/    # several inputs need a directory
 ```
 
-Without `-o`, output goes next to the input as `<name>.<ext>`, or `<name>.min.<ext>` when that would be the input itself. It takes `-o`, `-f`, `-c`, `--dither`, `--output-quality`, `--lossless`, `--json` and `--quiet`, with the same meaning as above. A file that already matches the request (a lossy WebP converted to WebP with default settings, for example) is copied rather than re-encoded, so it doesn't lose quality again. Existing files, including the input, are never overwritten. Each input is converted independently: if one fails, the others still run and the exit code reports the failure.
+Without `-o`, output goes next to the input as `<name>.<ext>`, or `<name>.min.<ext>` when that would be the input itself. It takes `-o`, `-f`, `-c`, `--dither`, `--output-quality`, `--lossless`, `--json` and `--quiet`, with the same meaning as above. Animated WebP and PNG (APNG) are refused rather than converted, because only the first frame would survive. A file that already matches the request (a lossy WebP converted to WebP with default settings, for example) is copied rather than re-encoded, so it doesn't lose quality again. Existing files, including the input, are never overwritten. Each input is converted independently: if one fails, the others still run and the exit code reports the failure.
 
 A bare `convert` as the first argument always runs this subcommand. A prompt that starts with the word still works when it's quoted, e.g. `codex-img "convert this sketch into a watercolor" -i sketch.png`.
 

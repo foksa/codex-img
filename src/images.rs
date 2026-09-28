@@ -182,22 +182,56 @@ impl Encoding {
     }
 }
 
-/// Lossless (VP8L) or lossy (VP8) WebP, from the RIFF chunks; None if neither chunk is found.
-/// Extended files (VP8X) put ICCP/ALPH/... chunks first, so walk the chunk list.
-fn webp_is_lossless(bytes: &[u8]) -> Option<bool> {
+/// Top-level chunk ids of a WebP file, in order. Stops at the first truncated chunk.
+fn webp_chunk_ids(bytes: &[u8]) -> Vec<[u8; 4]> {
+    let mut ids = Vec::new();
     if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WEBP" {
-        return None;
+        return ids;
     }
     let mut at = 12;
-    while at + 8 <= bytes.len() {
-        let size = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().ok()?) as usize;
-        match &bytes[at..at + 4] {
-            b"VP8L" => return Some(true),
-            b"VP8 " => return Some(false),
-            _ => at = at.checked_add(8 + size + (size & 1))?,
+    while let Some(header) = bytes.get(at..at + 8) {
+        ids.push([header[0], header[1], header[2], header[3]]);
+        let size = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
+        match at.checked_add(8 + size + (size & 1)) {
+            Some(next) => at = next,
+            None => break,
         }
     }
-    None
+    ids
+}
+
+/// Lossless (VP8L) or lossy (VP8) WebP; None if neither chunk is at the top level. Extended files
+/// (VP8X) put ICCP/ALPH/... chunks first, and animated ones nest frames in ANMF chunks.
+fn webp_is_lossless(bytes: &[u8]) -> Option<bool> {
+    webp_chunk_ids(bytes).iter().find_map(|id| match id {
+        b"VP8L" => Some(true),
+        b"VP8 " => Some(false),
+        _ => None,
+    })
+}
+
+/// Animated WebP (ANIM/ANMF chunks) or APNG (an acTL chunk before the image data).
+fn is_animated(bytes: &[u8]) -> bool {
+    match sniff(bytes) {
+        Some(Format::Webp) => webp_chunk_ids(bytes).iter().any(|id| id == b"ANIM" || id == b"ANMF"),
+        Some(Format::Png) => {
+            let mut at = 8;
+            while let Some(header) = bytes.get(at..at + 8) {
+                match &header[4..8] {
+                    b"acTL" => return true,
+                    b"IDAT" => return false,
+                    _ => {}
+                }
+                let len = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
+                match at.checked_add(12 + len) {
+                    Some(next) => at = next,
+                    None => return false,
+                }
+            }
+            false
+        }
+        _ => false,
+    }
 }
 
 /// Decode `bytes` (PNG, JPEG or WebP) and re-encode as `wanted`. JPEG has no alpha, so transparency
@@ -219,7 +253,14 @@ pub fn needs_encoding(bytes: &[u8], actual: Format, wanted: Format, enc: &Encodi
 }
 
 /// Fully decode the image (header checks alone miss damaged pixel data); returns its pixel size.
+/// Animated input is refused: decoding keeps only the first frame, and nothing here can write
+/// animation back, so any conversion (even same-format) would silently drop the rest.
 pub fn validate(bytes: &[u8]) -> Result<(u32, u32)> {
+    if is_animated(bytes) {
+        return Err(Error::other(
+            "Input is animated; codex-img converts still images only and would keep just the first frame.",
+        ));
+    }
     let image = image::load_from_memory(bytes).map_err(|e| Error::other(format!("Input image is damaged or unsupported: {e}")))?;
     Ok((image.width(), image.height()))
 }
@@ -389,6 +430,47 @@ pub(crate) mod tests {
         assert!(needs_encoding(&lossy, Format::Webp, Format::Webp, &Encoding { quality: Some(50), ..default }));
         assert!(needs_encoding(b"RIFF\x04\0\0\0WEBP", Format::Webp, Format::Webp, &default), "unknown kind: re-encode");
         assert_eq!((default.lossy_quality(Format::Webp), default.lossy_quality(Format::Jpeg), default.lossy_quality(Format::Png)), (Some(80), Some(90), None));
+    }
+
+    fn chunk(id: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut out = id.to_vec();
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(payload);
+        if payload.len() % 2 == 1 {
+            out.push(0);
+        }
+        out
+    }
+
+    #[test]
+    fn animated_input_is_refused_not_flattened() {
+        // Animated WebP: VP8X + ANIM + ANMF, with the frame data nested inside ANMF.
+        let mut body = b"WEBP".to_vec();
+        for c in [chunk(b"VP8X", &[0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0]), chunk(b"ANIM", &[0; 6]), chunk(b"ANMF", &[0; 16])] {
+            body.extend(c);
+        }
+        let mut webp = b"RIFF".to_vec();
+        webp.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        webp.extend(body);
+        assert!(is_animated(&webp));
+        assert_eq!(webp_is_lossless(&webp), None);
+        assert!(validate(&webp).unwrap_err().message.contains("animated"));
+
+        // APNG: an acTL chunk between IHDR and IDAT.
+        let png = gradient();
+        let ihdr_end = 8 + 12 + 13;
+        let mut apng = png[..ihdr_end].to_vec();
+        apng.extend_from_slice(&8u32.to_be_bytes());
+        apng.extend_from_slice(b"acTL");
+        apng.extend_from_slice(&[0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0]); // 2 frames, loop forever, crc
+        apng.extend_from_slice(&png[ihdr_end..]);
+        assert!(is_animated(&apng));
+        assert!(validate(&apng).unwrap_err().message.contains("animated"));
+
+        // Still images are unaffected.
+        let still = convert(&png, Format::Webp, &Encoding::default()).unwrap();
+        assert!(!is_animated(&png) && !is_animated(&still));
+        assert!(validate(&still).is_ok());
     }
 
     #[test]
