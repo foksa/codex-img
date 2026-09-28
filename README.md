@@ -61,7 +61,7 @@ codex-img status --json                                     # login check, uses 
 | `--via-responses` | Fallback route: a routing model calls the `image_generation` tool through the Responses API. The prompt may be rewritten and `--size` is ignored |
 | `-m, --model` | Routing model for `--via-responses` (default `gpt-5.5`) |
 | `-n, --count` | Images to generate in parallel (1–10). Each one is a separate request |
-| `--json` | Prints one JSON line per image: path, size, quality, revised prompt, usage, duration |
+| `--json` | Prints one JSON line per image: path, size, quality (the backend's), `outputQuality` (the JPEG/WebP quality codex-img applied, when it encoded lossily), revised prompt, usage, duration |
 | `--quiet` | No progress output on stderr |
 
 PNG output is always recompressed losslessly with oxipng. That roughly halves the backend's PNGs (946 KB → 462 KB in testing) without changing a pixel.
@@ -90,7 +90,7 @@ codex-img convert photo.png                      # -> photo.min.png, lossless re
 codex-img convert shots/*.png -f jpeg -o out/    # several inputs need a directory
 ```
 
-Without `-o`, output goes next to the input as `<name>.<ext>`, or `<name>.min.<ext>` when that would be the input itself. It takes `-o`, `-f`, `-c`, `--dither`, `--output-quality`, `--lossless`, `--json` and `--quiet`, with the same meaning as above. Existing files, including the input, are never overwritten. Each input is converted independently: if one fails, the others still run and the exit code reports the failure.
+Without `-o`, output goes next to the input as `<name>.<ext>`, or `<name>.min.<ext>` when that would be the input itself. It takes `-o`, `-f`, `-c`, `--dither`, `--output-quality`, `--lossless`, `--json` and `--quiet`, with the same meaning as above. A file that already matches the request (a lossy WebP converted to WebP with default settings, for example) is copied rather than re-encoded, so it doesn't lose quality again. Existing files, including the input, are never overwritten. Each input is converted independently: if one fails, the others still run and the exit code reports the failure.
 
 A bare `convert` as the first argument always runs this subcommand. A prompt that starts with the word still works when it's quoted, e.g. `codex-img "convert this sketch into a watercolor" -i sketch.png`.
 

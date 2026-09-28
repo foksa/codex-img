@@ -116,11 +116,12 @@ fn generate(mut opts: Options) -> Result<i32> {
                 };
                 let image = backend.generate(&request, &credentials, &|stage| log(&format!("{tag}{stage}")))?;
                 let target = cli::output_path(opts.output.as_deref(), format, &image.id, index, count, util::now_secs());
-                let (path, warning) = cli::save_image(&image.bytes, image.format, format, &opts.encoding, &target)?;
-                if let Some(warning) = warning {
+                let saved = cli::save_image(&image.bytes, image.format, format, &opts.encoding, &target)?;
+                if let Some(warning) = &saved.warning {
                     eprintln!("codex-img: {tag}warning: {warning}");
                 }
-                let info = cli::describe(&path, &image);
+                let path = saved.path;
+                let info = cli::describe(&path, &image, saved.output_quality);
                 if opts.json {
                     println!("{info}");
                 } else {
