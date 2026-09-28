@@ -1,6 +1,7 @@
 mod auth;
 mod backend;
 mod cli;
+mod convert;
 mod error;
 mod images;
 mod util;
@@ -36,6 +37,11 @@ fn run(args: &[String]) -> i32 {
             Ok(0)
         }
         Command::Status { json } => status(json),
+        Command::ConvertHelp => {
+            println!("{}", convert::help());
+            Ok(0)
+        }
+        Command::Convert(options) => Ok(convert::run(&options)),
         Command::Run(options) => generate(options),
     };
     result.unwrap_or_else(|error| {
@@ -70,9 +76,6 @@ fn generate(mut opts: Options) -> Result<i32> {
         return Err(Error::usage("Image prompt must contain 1 to 32,000 characters."));
     }
     let format = opts.format.unwrap_or(Format::Png);
-    if let Some(problem) = cli::format_problem(format, opts.via_responses) {
-        return Err(Error::usage(problem));
-    }
     let quiet = opts.quiet;
     let log = move |message: &str| {
         if !quiet {
@@ -111,7 +114,7 @@ fn generate(mut opts: Options) -> Result<i32> {
                 };
                 let image = backend.generate(&request, &credentials, &|stage| log(&format!("{tag}{stage}")))?;
                 let target = cli::output_path(opts.output.as_deref(), format, &image.id, index, count, util::now_secs());
-                let (path, warning) = cli::save_image(&image.bytes, image.format, format, &target)?;
+                let (path, warning) = cli::save_image(&image.bytes, image.format, format, opts.colors, opts.dither, &target)?;
                 if let Some(warning) = warning {
                     eprintln!("codex-img: {tag}warning: {warning}");
                 }
