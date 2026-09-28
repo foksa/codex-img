@@ -245,10 +245,12 @@ fn encode_output(bytes: &[u8], actual: Format, wanted: Format, colors: Option<u1
 }
 
 /// `convert` subcommand: write `bytes` as `wanted` to a new file. Returns the path and pixel size.
+/// Unlike generated images, a local input that doesn't fully decode is an error, not something to
+/// copy through: the fast paths (same format, best-effort optimization) would otherwise pass it on.
 pub fn save_converted(bytes: &[u8], wanted: Format, colors: Option<u16>, dither: bool, path: &Path) -> Result<(PathBuf, (u32, u32))> {
     let actual = images::sniff(bytes).ok_or_else(|| Error::other("Input is not a PNG, JPEG or WebP image."))?;
+    let dimensions = images::validate(bytes)?;
     let out = encode_output(bytes, actual, wanted, colors, dither)?;
-    let dimensions = images::dimensions(&out)?;
     create_parent(path)?;
     write_new(path, &out)?;
     Ok((path.to_path_buf(), dimensions))
