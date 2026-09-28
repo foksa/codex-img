@@ -21,7 +21,7 @@ On macOS, a binary downloaded with a browser may be quarantined; clear that with
 ./scripts/install.sh    # needs a Rust toolchain (https://rustup.rs)
 ```
 
-This builds `target/release/codex-img`, a single ~1.9 MB binary with no runtime dependencies, and symlinks:
+This builds `target/release/codex-img`, a single ~2 MB binary with no runtime dependencies, and symlinks:
 - the binary to `~/.local/bin/codex-img` (override with `BIN_DIR`);
 - the agent skill `skills/codex-img` into `~/.claude/skills/` and `~/.codex/skills/`, for whichever of those tools you have installed.
 
@@ -31,7 +31,7 @@ You need to be logged in once with `codex login` (ChatGPT sign-in). `codex-img s
 
 `skills/codex-img/SKILL.md` is an Agent Skill. Claude Code, Codex and other skill-aware agents load it automatically when a task involves making or editing an image. It covers the commands to run, when to spend quota, how to handle each exit code (don't retry auth or quota errors), and prompt-writing tips. Longer recipes are in `skills/codex-img/references/prompting.md`.
 
-When the binary isn't installed, the skill falls back to `skills/codex-img/scripts/codex_img.py`. It's a standard-library-only Python 3.9+ script with the same flags, exit codes and `--json` output, but it only covers the direct route and only writes PNG: there's no JPEG/WebP conversion and no `--via-responses`. Agents can convert the output themselves. That makes the skill folder usable on its own, just by copying it into `~/.claude/skills/` or `~/.codex/skills/`.
+When the binary isn't installed, the skill falls back to `skills/codex-img/scripts/codex_img.py`. It's a standard-library-only Python 3.9+ script with the same flags, exit codes and `--json` output, but it only covers the direct route and only writes PNG: there's no JPEG/WebP conversion, no quantization and no `--via-responses`. Agents can convert the output themselves. That makes the skill folder usable on its own, just by copying it into `~/.claude/skills/` or `~/.codex/skills/`.
 
 ## Usage
 
@@ -50,7 +50,9 @@ codex-img status --json                                     # login check, uses 
 |---|---|
 | `-o, --output` | File or directory. A trailing `/` or an existing directory gets generated names. With `-n`, files get `-1`, `-2`, … suffixes. Existing files are never overwritten. |
 | `-i, --image` | Reference image to edit or compose (PNG/JPEG/WebP, repeatable, max 5) |
-| `-f, --format` | `png` \| `jpeg` \| `webp`. Defaults to the `-o` extension, then `png`. The endpoint returns PNG and the rest is converted locally: `jpeg` at quality 90, with transparency flattened onto white; `webp` lossless, keeping transparency |
+| `-f, --format` | `png` \| `jpeg` \| `webp`. Defaults to the `-o` extension, then `png`. The endpoint returns PNG and the rest is converted locally: `jpeg` with transparency flattened onto white; `webp` lossy (libwebp), keeping transparency |
+| `--output-quality` | 1–100 for `jpeg` (default 90) and lossy `webp` (default 80). Separate from `-q`, which is only a hint to the backend |
+| `--lossless` | Lossless `webp` with every pixel kept exactly. Much bigger than lossy |
 | `-c, --colors` | Quantize PNG output to a palette of 2–256 colours, like pngquant. Transparency is kept. Best for flat art: a 969 KB icon came out at 13 KB with 64 colours |
 | `--dither` | Dither while quantizing. Smooths gradients and photos, but makes files larger |
 | `-s, --size` | `WxH` or `auto` |
@@ -64,6 +66,16 @@ codex-img status --json                                     # login check, uses 
 
 PNG output is always recompressed losslessly with oxipng. That roughly halves the backend's PNGs (946 KB → 462 KB in testing) without changing a pixel.
 
+Which format to pick, from one generated 1536x1024 image (946 KB from the backend):
+
+| Output | Size | Good for |
+|---|---|---|
+| `webp` (lossy, q80) | 7.5 KB | Web images, gradients, photos |
+| `png -c 64` | 8 KB | Flat art, icons, stickers; keeps transparency |
+| `jpeg` (q90) | 82 KB | Places that don't take WebP |
+| `png` | 462 KB | Exact pixels, further editing |
+| `webp --lossless` | 469 KB | Exact pixels, in WebP |
+
 Paths go to stdout and progress goes to stderr, so the tool composes well in scripts and agent tools.
 Exit codes: `0` ok, `1` error, `2` auth, `3` quota, `4` moderation, `64` usage.
 
@@ -72,13 +84,13 @@ Exit codes: `0` ok, `1` error, `2` auth, `3` quota, `4` moderation, `64` usage.
 `codex-img convert` runs the same local pipeline on files you already have. It needs no login and uses no quota.
 
 ```sh
-codex-img convert hero.png -o hero.webp          # PNG/JPEG/WebP in, any of them out
+codex-img convert hero.png -o hero.webp          # PNG/JPEG/WebP in, any of them out (lossy WebP)
 codex-img convert icon.png -c 64                 # -> icon.min.png, palette PNG
 codex-img convert photo.png                      # -> photo.min.png, lossless recompression only
 codex-img convert shots/*.png -f jpeg -o out/    # several inputs need a directory
 ```
 
-Without `-o`, output goes next to the input as `<name>.<ext>`, or `<name>.min.<ext>` when that would be the input itself. It takes `-o`, `-f`, `-c`, `--dither`, `--json` and `--quiet`, with the same meaning as above. Existing files, including the input, are never overwritten. Each input is converted independently: if one fails, the others still run and the exit code reports the failure.
+Without `-o`, output goes next to the input as `<name>.<ext>`, or `<name>.min.<ext>` when that would be the input itself. It takes `-o`, `-f`, `-c`, `--dither`, `--output-quality`, `--lossless`, `--json` and `--quiet`, with the same meaning as above. Existing files, including the input, are never overwritten. Each input is converted independently: if one fails, the others still run and the exit code reports the failure.
 
 A bare `convert` as the first argument always runs this subcommand. A prompt that starts with the word still works when it's quoted, e.g. `codex-img "convert this sketch into a watercolor" -i sketch.png`.
 
