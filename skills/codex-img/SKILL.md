@@ -51,7 +51,19 @@ EOF
 | 1 | Network, timeout or backend error | The backend may already have used quota. Tell the user, and retry at most once. |
 | 64 | Bad arguments | Fix the command |
 
-If the command isn't found, the tool isn't installed. Tell the user rather than trying another image service.
+## If `codex-img` isn't installed
+
+When `command -v codex-img` finds nothing, use the bundled fallback, `scripts/codex_img.py` in this skill's directory (Python 3.9+, standard library only). It takes the same arguments and has the same exit codes and `--json` output:
+
+```sh
+python3 <skill-dir>/scripts/codex_img.py "<prompt>" -o <path>.png --json
+```
+
+Its limits:
+- **PNG only.** It refuses `-f`, and any `-o` extension other than `.png`, before spending quota. If the user wants JPEG or WebP, or exact pixel dimensions, generate a PNG and then convert or resize it yourself (`sips`, ImageMagick, Pillow).
+- **No `--via-responses` or `--model`.**
+
+If `python3` is missing as well, tell the user rather than trying another image service. They can install the binary from the project's releases page.
 
 ## Behaviour to expect
 
