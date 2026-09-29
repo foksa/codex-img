@@ -349,7 +349,7 @@ fn quantize_png(rgba: &image::RgbaImage, colors: u16, dither: bool) -> std::resu
         }
         indices.push(index as u8);
     }
-    let (palette, indices) = if indices.len() == pixels.len() {
+    let (mut palette, indices) = if indices.len() == pixels.len() {
         (exact, indices)
     } else {
         let (width, colors) = (rgba.width() as usize, usize::from(colors));
@@ -359,6 +359,12 @@ fn quantize_png(rgba: &image::RgbaImage, colors: u16, dither: bool) -> std::resu
             exoquant::convert_to_indexed(&pixels, width, colors, &optimizer::KMeans, &ditherer::None)
         }
     };
+    // k-means averages alpha too, so hard (0/255) alpha could come back as 254. Keep it hard.
+    if pixels.iter().all(|p| p.a == 0 || p.a == 255) {
+        for color in &mut palette {
+            color.a = if color.a >= 128 { 255 } else { 0 };
+        }
+    }
 
     let mut out = Vec::new();
     let mut encoder = png::Encoder::new(&mut out, rgba.width(), rgba.height());
@@ -506,6 +512,14 @@ pub(crate) mod tests {
         assert!(info.trns.is_some(), "transparent pixels need a tRNS chunk");
         let decoded = image::load_from_memory(&small).unwrap().to_rgba8();
         assert_eq!((decoded.get_pixel(0, 0).0[3], decoded.get_pixel(63, 63).0[3]), (0, 255));
+
+        // Hard alpha stays hard: k-means must not average it into 254.
+        let hard = image::RgbaImage::from_fn(64, 64, |x, y| image::Rgba([(x * 4) as u8, (y * 4) as u8, 90, if (x + y) % 7 == 0 { 0 } else { 255 }]));
+        let mut hard_png = std::io::Cursor::new(Vec::new());
+        hard.write_to(&mut hard_png, image::ImageFormat::Png).unwrap();
+        let quantized = convert(&hard_png.into_inner(), Format::Png, &enc(8, true)).unwrap();
+        let alphas = image::load_from_memory(&quantized).unwrap().to_rgba8();
+        assert!(alphas.pixels().all(|p| p.0[3] == 0 || p.0[3] == 255));
 
         // Few distinct colours are kept exactly, with no dithering.
         let exact = convert(&base64::engine::general_purpose::STANDARD.decode(PNG_B64).unwrap(), Format::Png, &enc(256, false)).unwrap();

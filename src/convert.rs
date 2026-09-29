@@ -37,9 +37,13 @@ Options:
       --dither              Dither when quantizing
       --output-quality <n>  1-100 for jpeg (default 90) and lossy webp (default 80)
       --lossless            Lossless webp instead of lossy
-      --trim[=pad]          Crop transparent borders to the visible pixels, keeping
-                            pad transparent pixels around them (default 0). An
-                            image with no transparent border is left as it is
+      --trim[=pad]          Crop transparent borders to the visible pixels (alpha
+                            above 16; fainter specks don't count), keeping pad
+                            transparent pixels around them (default 0). An image
+                            with no transparent border is left as it is
+      --hard-alpha[=n]      Make every pixel fully solid (alpha above n, default
+                            16) or fully transparent, before --trim and again after
+                            --resize. For pixel art and crisp sprite edges
       --resize <size>       WxH, Wx or xH (one side keeps the aspect ratio).
                             Resampled with premultiplied alpha, after --trim
       --fit <mode>          How WxH handles another aspect ratio: inside (default,
@@ -59,6 +63,7 @@ Examples:
   codex-img convert icon.png -c 64            # -> icon.min.png
   codex-img convert shots/*.png -f jpeg -o out/
   codex-img convert car.png --trim=4 --resize 400x -o sprites/
+  codex-img convert car.png --hard-alpha --trim --resize 400x300 -c 160   # pixel art
   codex-img convert cockpit.png --resize 1920x1080 --fit cover"#
 }
 
@@ -92,6 +97,10 @@ pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
             "--resize" => opts.transform.resize = Some(Resize::parse(&value()?)?),
             "--fit" => opts.transform.fit = Some(Fit::parse(&value()?)?),
             "--no-bleed" => opts.transform.no_bleed = true,
+            "--hard-alpha" => {
+                opts.transform.hard_alpha =
+                    Some(inline.as_deref().map(transform::parse_hard_alpha).transpose()?.unwrap_or(transform::FAINT_ALPHA))
+            }
             "--json" => opts.json = true,
             "--quiet" => opts.quiet = true,
             "-h" | "--help" => return Ok(None),
@@ -247,6 +256,7 @@ mod tests {
         let t = parse(&args(&["a.png", "--trim=8", "--resize", "512x512", "--fit=cover", "--no-bleed"])).unwrap().unwrap().transform;
         assert_eq!((t.trim, t.resize.and_then(|r| r.width), t.fit, t.no_bleed), (Some(8), Some(512), Some(Fit::Cover), true));
         assert_eq!(parse(&args(&["a.png", "--trim"])).unwrap().unwrap().transform.trim, Some(0));
+        assert_eq!(parse(&args(&["a.png", "--hard-alpha=40"])).unwrap().unwrap().transform.hard_alpha, Some(40));
         assert!(usage_error(&["a.png", "--fit", "cover"]).contains("--resize"));
         assert!(usage_error(&["a.png", "--resize", "big"]).contains("WxH"));
     }
