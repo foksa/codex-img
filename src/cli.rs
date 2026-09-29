@@ -365,17 +365,17 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
 /// Write the image as `wanted`, applying `transform` and converting (and quantizing, with
 /// `colors`) when needed; PNG output is also recompressed losslessly. If the bytes can't be
 /// processed, keep them under their real extension: the quota is already spent. For the same
-/// reason, when the transform trims or resizes, the untouched original is kept next to the output
-/// as `<name>.raw.<ext>`; there is no seed to regenerate it.
+/// reason, when the transform edits visible pixels (trim, resize, hard alpha), the untouched
+/// original is kept next to the output as `<name>.raw.<ext>`; there is no seed to regenerate it.
 pub struct Saved {
     pub path: PathBuf,
     pub warning: Option<String>,
     /// Lossy quality codex-img applied (JPEG or lossy WebP), not the backend's quality hint.
     pub output_quality: Option<u8>,
-    /// Pixel size of the saved file, when trim or resize may have changed it.
+    /// Pixel size of the saved file, when the transform edited visible pixels.
     pub size: Option<(u32, u32)>,
     pub trim: Option<transform::Rect>,
-    /// The untouched generated image, when trim or resize was applied.
+    /// The untouched generated image, when the transform edited visible pixels.
     pub raw_path: Option<PathBuf>,
 }
 
@@ -433,7 +433,7 @@ pub fn describe(saved: &Saved, image: &Generated) -> Value {
     put("transport", Some(json!(image.transport.name())));
     put("imageModel", reported.model.as_ref().map(|v| json!(v)));
     put("routingModel", image.routing_model.as_ref().map(|v| json!(v)));
-    // After trim/resize, `size` is the saved file's; the backend's goes to `rawSize`.
+    // After trim, resize or hard alpha, `size` is the saved file's; the backend's goes to `rawSize`.
     match saved.size {
         Some((w, h)) => {
             put("size", Some(json!(format!("{w}x{h}"))));
