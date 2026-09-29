@@ -14,14 +14,14 @@ codex-img "<prompt>" -o <path> --json                  # generate
 codex-img "<prompt>" -i <image> -o <path> --json       # edit / use as reference (repeat -i, max 5)
 codex-img "<prompt>" -n 3 -o <dir>/ --json             # 3 variations in parallel (only if asked)
 codex-img status --json                                # check login, uses no quota
-codex-img convert <file>... [-o <path>] [-f fmt] [-c n] --json   # convert existing images, uses no quota
+codex-img convert <file>... [-o <path>] [-f fmt] [-c n] [--trim] [--resize WxH] --json   # convert/trim/resize, no quota
 ```
 
 | Option | Values |
 |---|---|
 | `-o` | File (`hero.png`) or directory (`assets/`). Format is inferred from the extension. Existing files are never overwritten, so choose a new name for each iteration. |
 | `-i` | PNG, JPEG or WebP input, repeatable up to 5 |
-| `-s` | `1536x1024` (landscape), `1024x1536` (portrait), `auto`; a hint for the shape, not exact pixels |
+| `-s` | `1536x1024` (landscape), `1024x1536` (portrait), `auto`; a hint for the shape, not exact pixels (`1536x1024` can come back as 1672x941). For exact pixels, run `convert --resize WxH --fit cover` afterwards |
 | `-b` | `transparent` for real alpha (PNG only), `opaque`, `auto` |
 | `-q` | `low` \| `medium` \| `high` \| `auto`; a hint, and the subscription caps it at medium |
 | `-f` | `png` (native), `jpeg` (converted locally; transparency becomes white) or `webp` (lossy, keeps transparency; tune with `--output-quality 1-100`, default 80, or use `--lossless` for exact pixels). Use PNG unless the user wants another format; for images going on a website, lossy `webp` is usually the smallest by far (a 946 KB PNG became 7.5 KB). |
@@ -35,16 +35,21 @@ multi-line prompt here, with "quotes" and $symbols
 EOF
 ```
 
-## Converting and shrinking existing images
+## Converting, trimming and resizing existing images
 
-`codex-img convert` handles PNG, JPEG and WebP files locally, with no login and no quota. Use it instead of ImageMagick or Pillow for format changes and size reduction, including on images you generated earlier. Don't call the image model just to change the format.
+`codex-img convert` handles PNG, JPEG and WebP files locally, with no login and no quota. Use it instead of ImageMagick, Pillow or a custom script for format changes, cropping to content, resizing and size reduction, including on images you generated earlier. Don't call the image model just to change the format or size.
 
 - `codex-img convert in.png -o out.webp`, or `-f jpeg`, changes the format. Add `--output-quality N` to trade size for quality.
 - `codex-img convert icon.png -c 64` writes `icon.min.png`, a palette PNG, for flat art.
 - `codex-img convert in.png` writes `in.min.png`, lossless recompression only.
+- `--trim` crops transparent borders to the visible pixels; `--trim=4` keeps 4 transparent pixels around them. `--json` reports the crop as `trim: {x, y, width, height}` in input pixels, for placing sprites.
+- `--resize 400x` (or `x300`) keeps the aspect ratio. With `--resize WxH`, `--fit` decides: `inside` (default; fits in the box, one side may be smaller), `cover` (exactly WxH, crops the centre), `contain` (exactly WxH, transparent padding), `fill` (stretches). Trim runs first, then resize.
+- Game sprites: `codex-img convert raw/car.png --trim=4 --resize 400x -o sprites/`. Keep the raw generated image; there's no seed to regenerate it.
 - With several inputs, `-o` must be a directory ending in `/`.
 
-It never overwrites existing files or the input. It doesn't resize; use `sips` or ImageMagick for that. Keep prompts that start with the word "convert" quoted, because a bare `convert` as the first argument runs this subcommand.
+Resizing uses premultiplied alpha, so the colour stored under transparent pixels (generated images often hide a dark vignette there) can't bleed into the edges. PNG and lossless WebP output also gets the nearest visible colour written under transparent pixels, so engines and other tools that filter without premultiplying don't show a dark halo either. `--no-bleed` turns that off. You don't need to clean transparent pixels yourself.
+
+It never overwrites existing files or the input. Keep prompts that start with the word "convert" quoted, because a bare `convert` as the first argument runs this subcommand.
 
 ## Workflow
 
@@ -74,7 +79,7 @@ python3 <skill-dir>/scripts/codex_img.py "<prompt>" -o <path>.png --json
 
 Its limits:
 - **PNG only.** It refuses `-f`, and any `-o` extension other than `.png`, before spending quota. If the user wants JPEG or WebP, or exact pixel dimensions, generate a PNG and then convert or resize it yourself (`sips`, ImageMagick, Pillow).
-- **No `-c`/`--dither` quantization, no `--output-quality`/`--lossless`, no `convert` subcommand, and no `--via-responses` or `--model`.**
+- **No `-c`/`--dither` quantization, no `--output-quality`/`--lossless`, no `convert` subcommand (so no trim, resize or edge bleed), and no `--via-responses` or `--model`.**
 
 If `python3` is missing as well, tell the user rather than trying another image service. They can install the binary from the project's releases page.
 
