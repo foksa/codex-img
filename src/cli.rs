@@ -36,7 +36,14 @@ Options:
                             PNG output is always recompressed losslessly
       --dither              Dither when quantizing (smoother gradients/photos,
                             larger files)
-  -s, --size <WxH>          Shape hint, e.g. 1536x1024, 1024x1536, auto
+      --trim[=pad]          Crop transparent borders to the visible pixels
+      --resize <size>       WxH, Wx or xH, after --trim; --fit inside (default) |
+                            cover | contain | fill for WxH. With --trim or --resize
+                            the original is also kept, as <name>.raw.png
+      --no-bleed            Keep the colour under fully transparent pixels (by
+                            default PNG and lossless webp get the nearest edge colour)
+  -s, --size <WxH>          Shape hint, e.g. 1536x1024, 1024x1536, auto. For exact
+                            pixels add --resize WxH --fit cover
   -q, --quality <q>         low | medium | high | auto
   -b, --background <bg>     transparent | opaque | auto
       --via-responses       Fallback route: a routing model calls the image tool
@@ -51,8 +58,9 @@ Options:
 Uses the ChatGPT login stored by `codex login` ($CODEX_HOME/auth.json).
 Exit codes: 0 ok, 1 error, 2 auth, 3 quota, 4 moderation, 64 usage.
 
-Example:
-  codex-img "flat vector red fox in snow" -o fox.png --json"#
+Examples:
+  codex-img "flat vector red fox in snow" -o fox.png --json
+  codex-img "race car sprite, side view" -b transparent --trim=4 --resize 400x -o car.png"#
     )
 }
 
@@ -67,6 +75,8 @@ pub struct Options {
     pub background: Option<String>,
     /// Local encoding: palette, dithering, JPEG/WebP quality, lossless WebP.
     pub encoding: images::Encoding,
+    /// Trim, resize and edge bleed applied to each generated image before saving.
+    pub transform: transform::Transform,
     pub model: Option<String>,
     pub via_responses: bool,
     pub count: usize,
@@ -137,11 +147,18 @@ pub fn parse(args: &[String]) -> Result<Command> {
             "--via-responses" => "via-responses",
             "--dither" => "dither",
             "--lossless" => "lossless",
+            "--trim" => "trim",
+            "--resize" => "resize",
+            "--fit" => "fit",
+            "--no-bleed" => "no-bleed",
             "-h" | "--help" => "help",
             "-v" | "--version" => "version",
             _ => return Err(Error::usage(format!("Unknown option: {arg}"))),
         };
-        if matches!(key, "json" | "quiet" | "via-responses" | "dither" | "lossless" | "help" | "version") {
+        // --trim takes its padding only inline (--trim=8): a bare value after it is the prompt.
+        if matches!(key, "json" | "quiet" | "via-responses" | "dither" | "lossless" | "no-bleed" | "help" | "version")
+            || (key == "trim" && inline.is_none())
+        {
             flags.push(key);
         } else {
             let value = match inline {
@@ -182,6 +199,16 @@ pub fn parse(args: &[String]) -> Result<Command> {
     };
     // The format may still be unknown here (it defaults to PNG); generate() checks again.
     encoding.check(format)?;
+    let transform = transform::Transform {
+        trim: match last("trim") {
+            Some(padding) => Some(transform::parse_trim_padding(&padding)?),
+            None => flags.contains(&"trim").then_some(0),
+        },
+        resize: last("resize").map(|v| transform::Resize::parse(&v)).transpose()?,
+        fit: last("fit").map(|v| transform::Fit::parse(&v)).transpose()?,
+        no_bleed: flags.contains(&"no-bleed"),
+    };
+    transform.check()?;
     let via_responses = flags.contains(&"via-responses");
     let model = last("model");
     if model.is_some() && !via_responses {
@@ -200,6 +227,7 @@ pub fn parse(args: &[String]) -> Result<Command> {
         quality: one_of("quality", last("quality"), &["low", "medium", "high", "auto"])?,
         background: one_of("background", last("background"), &["transparent", "opaque", "auto"])?,
         encoding,
+        transform,
         model,
         via_responses,
         count,
@@ -258,6 +286,41 @@ fn encode_output(bytes: &[u8], actual: Format, wanted: Format, enc: &images::Enc
     Ok((out, quality))
 }
 
+/// Result of `process`: the encoded file, plus what the transform did.
+struct Processed {
+    bytes: Vec<u8>,
+    /// Lossy quality codex-img applied, if it did a lossy encode.
+    output_quality: Option<u8>,
+    /// Input and output pixel size; None when the bytes were passed on without decoding.
+    sizes: Option<((u32, u32), (u32, u32))>,
+    trim: Option<transform::Rect>,
+}
+
+/// Apply `transform` and encode as `wanted`; PNG output is also recompressed losslessly.
+/// `lenient` is for generated images: if they don't decode and nothing asked to reshape them, they
+/// go through `encode_output` untouched rather than failing.
+fn process(bytes: &[u8], actual: Format, wanted: Format, enc: &images::Encoding, transform: &transform::Transform, lenient: bool) -> Result<Processed> {
+    let rgba = match images::decode(bytes) {
+        Ok(rgba) => rgba,
+        Err(_) if lenient && !transform.reshapes() => {
+            let (bytes, output_quality) = encode_output(bytes, actual, wanted, enc)?;
+            return Ok(Processed { bytes, output_quality, sizes: None, trim: None });
+        }
+        Err(e) => return Err(e),
+    };
+    let input_size = rgba.dimensions();
+    let applied = transform.apply(rgba, wanted, enc)?;
+    let sizes = Some((input_size, applied.image.dimensions()));
+    let (bytes, output_quality) = if applied.changed {
+        let encoded = images::encode(&applied.image, wanted, enc)?;
+        let out = if wanted == Format::Png { images::optimize_png(&encoded).unwrap_or(encoded) } else { encoded };
+        (out, enc.lossy_quality(wanted))
+    } else {
+        encode_output(bytes, actual, wanted, enc)?
+    };
+    Ok(Processed { bytes, output_quality, sizes, trim: applied.trim })
+}
+
 /// What `save_converted` wrote.
 pub struct Converted {
     pub path: PathBuf,
@@ -273,20 +336,11 @@ pub struct Converted {
 /// copy through: the fast paths (same format, best-effort optimization) would otherwise pass it on.
 pub fn save_converted(bytes: &[u8], wanted: Format, enc: &images::Encoding, transform: &transform::Transform, path: &Path) -> Result<Converted> {
     let actual = images::sniff(bytes).ok_or_else(|| Error::other("Input is not a PNG, JPEG or WebP image."))?;
-    let rgba = images::decode(bytes)?;
-    let input_size = rgba.dimensions();
-    let applied = transform.apply(rgba, wanted, enc)?;
-    let size = applied.image.dimensions();
-    let (out, output_quality) = if applied.changed {
-        let encoded = images::encode(&applied.image, wanted, enc)?;
-        let out = if wanted == Format::Png { images::optimize_png(&encoded).unwrap_or(encoded) } else { encoded };
-        (out, enc.lossy_quality(wanted))
-    } else {
-        encode_output(bytes, actual, wanted, enc)?
-    };
+    let processed = process(bytes, actual, wanted, enc, transform, false)?;
+    let (input_size, size) = processed.sizes.ok_or_else(|| Error::other("Input image could not be decoded."))?;
     create_parent(path)?;
-    write_new(path, &out)?;
-    Ok(Converted { path: path.to_path_buf(), input_size, size, output_quality, trim: applied.trim })
+    write_new(path, &processed.bytes)?;
+    Ok(Converted { path: path.to_path_buf(), input_size, size, output_quality: processed.output_quality, trim: processed.trim })
 }
 
 fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -298,32 +352,62 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     file.write_all(bytes).map_err(|e| Error::other(format!("Could not write {}: {e}", path.display())))
 }
 
-/// Write the image as `wanted`, converting (and quantizing, with `colors`) when needed; PNG output is
-/// also recompressed losslessly. If the bytes can't be converted, keep them under their real
-/// extension: the quota is already spent.
+/// Write the image as `wanted`, applying `transform` and converting (and quantizing, with
+/// `colors`) when needed; PNG output is also recompressed losslessly. If the bytes can't be
+/// processed, keep them under their real extension: the quota is already spent. For the same
+/// reason, when the transform trims or resizes, the untouched original is kept next to the output
+/// as `<name>.raw.<ext>`; there is no seed to regenerate it.
 pub struct Saved {
     pub path: PathBuf,
     pub warning: Option<String>,
     /// Lossy quality codex-img applied (JPEG or lossy WebP), not the backend's quality hint.
     pub output_quality: Option<u8>,
+    /// Pixel size of the saved file, when trim or resize may have changed it.
+    pub size: Option<(u32, u32)>,
+    pub trim: Option<transform::Rect>,
+    /// The untouched generated image, when trim or resize was applied.
+    pub raw_path: Option<PathBuf>,
 }
 
-pub fn save_image(bytes: &[u8], actual: Format, wanted: Format, enc: &images::Encoding, path: &Path) -> Result<Saved> {
+pub fn save_image(bytes: &[u8], actual: Format, wanted: Format, enc: &images::Encoding, transform: &transform::Transform, path: &Path) -> Result<Saved> {
     create_parent(path)?;
-    let error = match encode_output(bytes, actual, wanted, enc) {
-        Ok((out, output_quality)) => {
-            write_new(path, &out)?;
-            return Ok(Saved { path: path.to_path_buf(), warning: None, output_quality });
+    let error = match process(bytes, actual, wanted, enc, transform, true) {
+        Ok(processed) => {
+            write_new(path, &processed.bytes)?;
+            let mut saved = Saved {
+                path: path.to_path_buf(),
+                warning: None,
+                output_quality: processed.output_quality,
+                size: None,
+                trim: processed.trim,
+                raw_path: None,
+            };
+            if transform.reshapes() {
+                saved.size = processed.sizes.map(|(_, size)| size);
+                let raw = raw_path(path, actual);
+                match write_new(&raw, bytes) {
+                    Ok(()) => saved.raw_path = Some(raw),
+                    Err(e) => saved.warning = Some(format!("could not keep the original image: {}", e.message)),
+                }
+            }
+            return Ok(saved);
         }
         Err(e) => e.message,
     };
     let fallback = path.with_extension(actual.extension());
     write_new(&fallback, bytes)?;
     let warning = format!("{error}; saved the original {} as {}", actual.name(), fallback.display());
-    Ok(Saved { path: fallback, warning: Some(warning), output_quality: None })
+    Ok(Saved { path: fallback, warning: Some(warning), output_quality: None, size: None, trim: None, raw_path: None })
 }
 
-pub fn describe(path: &Path, image: &Generated, output_quality: Option<u8>) -> Value {
+/// `out/car.png` -> `out/car.raw.png` (in the format the backend returned).
+fn raw_path(path: &Path, actual: Format) -> PathBuf {
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "image".into());
+    path.with_file_name(format!("{stem}.raw.{}", actual.extension()))
+}
+
+pub fn describe(saved: &Saved, image: &Generated) -> Value {
+    let (path, output_quality) = (saved.path.as_path(), saved.output_quality);
     let format = path.extension().and_then(|e| e.to_str()).and_then(Format::parse).unwrap_or(image.format);
     let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(image.bytes.len() as u64);
     let mut out = Map::new();
@@ -339,7 +423,16 @@ pub fn describe(path: &Path, image: &Generated, output_quality: Option<u8>) -> V
     put("transport", Some(json!(image.transport.name())));
     put("imageModel", reported.model.as_ref().map(|v| json!(v)));
     put("routingModel", image.routing_model.as_ref().map(|v| json!(v)));
-    put("size", reported.size.as_ref().map(|v| json!(v)));
+    // After trim/resize, `size` is the saved file's; the backend's goes to `rawSize`.
+    match saved.size {
+        Some((w, h)) => {
+            put("size", Some(json!(format!("{w}x{h}"))));
+            put("rawSize", reported.size.as_ref().map(|v| json!(v)));
+        }
+        None => put("size", reported.size.as_ref().map(|v| json!(v))),
+    }
+    put("rawPath", saved.raw_path.as_ref().map(|p| json!(p.display().to_string())));
+    put("trim", saved.trim.map(|r| json!({"x": r.x, "y": r.y, "width": r.width, "height": r.height})));
     put("quality", reported.quality.as_ref().map(|v| json!(v)));
     put("outputQuality", output_quality.map(|q| json!(q)));
     put("background", reported.background.as_ref().map(|v| json!(v)));
@@ -407,6 +500,13 @@ mod tests {
         assert!(usage_error(&["-o", "a.jpg", "--lossless", "x"]).contains("WebP"));
         assert!(usage_error(&["--dither", "x"]).contains("--colors"));
         assert_eq!(run(&["-o", "a.webp", "x"]).format, Some(Format::Webp));
+        let t = run(&["--trim=4", "--resize", "400x", "--no-bleed", "x"]).transform;
+        assert_eq!((t.trim, t.resize.and_then(|r| r.width), t.no_bleed), (Some(4), Some(400), true));
+        let o = run(&["--trim", "a", "car"]);
+        assert_eq!((o.transform.trim, o.prompt.as_str()), (Some(0), "a car"), "a bare --trim takes no value");
+        assert_eq!(run(&["--resize=1536x1024", "--fit", "cover", "x"]).transform.fit, Some(transform::Fit::Cover));
+        assert!(usage_error(&["--fit", "cover", "x"]).contains("--resize"));
+        assert!(usage_error(&["--trim=-1", "x"]).contains("--trim"));
         let o = run(&["--via-responses", "-m", "gpt-6-sol", "x"]);
         assert!(o.via_responses);
         assert_eq!(o.model.as_deref(), Some("gpt-6-sol"));
@@ -436,29 +536,62 @@ mod tests {
     }
 
     #[test]
+    fn save_image_trims_resizes_and_keeps_the_original() {
+        let dir = crate::auth::tests::temp_dir("save-transform");
+        let sprite = image::RgbaImage::from_fn(64, 48, |x, y| {
+            if (16..48).contains(&x) && (8..24).contains(&y) { image::Rgba([200, 60, 40, 255]) } else { image::Rgba([5, 5, 5, 0]) }
+        });
+        let mut png = std::io::Cursor::new(Vec::new());
+        sprite.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let png = png.into_inner();
+        let t = transform::Transform { trim: Some(0), resize: Some(transform::Resize::parse("16x").unwrap()), ..Default::default() };
+        let saved = save_image(&png, Format::Png, Format::Webp, &images::Encoding::default(), &t, &dir.join("car.webp")).unwrap();
+        assert_eq!((saved.size, saved.warning.as_deref()), (Some((16, 8)), None));
+        assert_eq!(saved.trim, Some(transform::Rect { x: 16, y: 8, width: 32, height: 16 }));
+        assert_eq!(saved.raw_path.as_deref(), Some(dir.join("car.raw.png").as_path()));
+        assert_eq!(std::fs::read(dir.join("car.raw.png")).unwrap(), png, "the original is kept byte for byte");
+
+        // Bleed alone doesn't reshape: no raw copy, and the hidden colour is replaced.
+        let saved = save_image(&png, Format::Png, Format::Png, &images::Encoding::default(), &transform::Transform::default(), &dir.join("bled.png")).unwrap();
+        assert!(saved.raw_path.is_none() && saved.size.is_none());
+        assert_eq!(image::open(&saved.path).unwrap().to_rgba8().get_pixel(0, 0).0, [200, 60, 40, 0]);
+
+        // A transform that fails still saves the generated image.
+        let empty = {
+            let mut out = std::io::Cursor::new(Vec::new());
+            image::RgbaImage::new(8, 8).write_to(&mut out, image::ImageFormat::Png).unwrap();
+            out.into_inner()
+        };
+        let trim = transform::Transform { trim: Some(0), ..Default::default() };
+        let saved = save_image(&empty, Format::Png, Format::Png, &images::Encoding::default(), &trim, &dir.join("empty.png")).unwrap();
+        assert!(saved.warning.unwrap().contains("no visible pixels"));
+        assert_eq!(std::fs::read(saved.path).unwrap(), empty);
+    }
+
+    #[test]
     fn save_image_converts_and_never_discards_output() {
         use base64::Engine;
         let dir = crate::auth::tests::temp_dir("save");
         let png = base64::engine::general_purpose::STANDARD.decode(crate::images::tests::PNG_B64).unwrap();
 
         for (name, format) in [("a.jpg", Format::Jpeg), ("a.webp", Format::Webp)] {
-            let saved = save_image(&png, Format::Png, format, &images::Encoding::default(), &dir.join(name)).unwrap();
+            let saved = save_image(&png, Format::Png, format, &images::Encoding::default(), &transform::Transform::default(), &dir.join(name)).unwrap();
             let path = saved.path.clone();
             assert_eq!((saved.path, saved.warning), (dir.join(name), None));
             assert_eq!(saved.output_quality, Some(if format == Format::Jpeg { 90 } else { 80 }));
             assert_eq!(images::sniff(&std::fs::read(&path).unwrap()), Some(format));
         }
-        let saved = save_image(&png, Format::Png, Format::Png, &images::Encoding { colors: Some(8), dither: true, ..Default::default() }, &dir.join("q.png")).unwrap();
+        let saved = save_image(&png, Format::Png, Format::Png, &images::Encoding { colors: Some(8), dither: true, ..Default::default() }, &transform::Transform::default(), &dir.join("q.png")).unwrap();
         assert_eq!((saved.path, saved.warning, saved.output_quality), (dir.join("q.png"), None, None));
 
         // Bytes that can't be decoded are still kept, under their real extension.
         let fake = b"\x89PNG\r\n\x1a\nbroken";
-        let saved = save_image(fake, Format::Png, Format::Png, &images::Encoding::default(), &dir.join("c.png")).unwrap();
+        let saved = save_image(fake, Format::Png, Format::Png, &images::Encoding::default(), &transform::Transform::default(), &dir.join("c.png")).unwrap();
         assert_eq!((std::fs::read(saved.path).unwrap(), saved.warning), (fake.to_vec(), None), "unoptimizable PNG is kept as is");
-        let saved = save_image(fake, Format::Png, Format::Webp, &images::Encoding::default(), &dir.join("b.webp")).unwrap();
+        let saved = save_image(fake, Format::Png, Format::Webp, &images::Encoding::default(), &transform::Transform::default(), &dir.join("b.webp")).unwrap();
         assert_eq!((saved.path, saved.output_quality), (dir.join("b.png"), None));
         assert!(saved.warning.unwrap().contains("saved the original png"));
 
-        assert!(save_image(&png, Format::Png, Format::Png, &images::Encoding::default(), &dir.join("b.png")).is_err(), "must not overwrite");
+        assert!(save_image(&png, Format::Png, Format::Png, &images::Encoding::default(), &transform::Transform::default(), &dir.join("b.png")).is_err(), "must not overwrite");
     }
 }

@@ -21,8 +21,9 @@ codex-img convert <file>... [-o <path>] [-f fmt] [-c n] [--trim] [--resize WxH] 
 |---|---|
 | `-o` | File (`hero.png`) or directory (`assets/`). Format is inferred from the extension. Existing files are never overwritten, so choose a new name for each iteration. |
 | `-i` | PNG, JPEG or WebP input, repeatable up to 5 |
-| `-s` | `1536x1024` (landscape), `1024x1536` (portrait), `auto`; a hint for the shape, not exact pixels (`1536x1024` can come back as 1672x941). For exact pixels, run `convert --resize WxH --fit cover` afterwards |
+| `-s` | `1536x1024` (landscape), `1024x1536` (portrait), `auto`; a hint for the shape, not exact pixels (`1536x1024` can come back as 1672x941). For exact pixels, add `--resize WxH --fit cover` |
 | `-b` | `transparent` for real alpha (PNG only), `opaque`, `auto` |
+| `--trim`, `--resize`, `--fit` | Same as in `convert` (below), applied before saving. Useful for sprites: `-b transparent --trim=4 --resize 400x`. The untouched original is also saved as `<name>.raw.png` and reported as `rawPath`; keep it, since there's no seed to regenerate it. `size` is then the saved file's, and `rawSize` the backend's |
 | `-q` | `low` \| `medium` \| `high` \| `auto`; a hint, and the subscription caps it at medium |
 | `-f` | `png` (native), `jpeg` (converted locally; transparency becomes white) or `webp` (lossy, keeps transparency; tune with `--output-quality 1-100`, default 80, or use `--lossless` for exact pixels). Use PNG unless the user wants another format; for images going on a website, lossy `webp` is usually the smallest by far (a 946 KB PNG became 7.5 KB). |
 | `-c` | (PNG is always recompressed losslessly, so plain PNG files are already about half the backend's size.) Quantize PNG to a palette of 2–256 colours, keeping transparency. For icons, stickers, logos and flat illustrations meant for the web or an app, `-c 64` to `-c 256` usually cuts the file 10x or more with no visible change. Don't use it for photos or soft gradients; if banding shows, raise the count or add `--dither`. |
@@ -44,7 +45,7 @@ EOF
 - `codex-img convert in.png` writes `in.min.png`, lossless recompression only.
 - `--trim` crops transparent borders to the visible pixels; `--trim=4` keeps 4 transparent pixels around them. `--json` reports the crop as `trim: {x, y, width, height}` in input pixels, for placing sprites.
 - `--resize 400x` (or `x300`) keeps the aspect ratio. With `--resize WxH`, `--fit` decides: `inside` (default; fits in the box, one side may be smaller), `cover` (exactly WxH, crops the centre), `contain` (exactly WxH, transparent padding), `fill` (stretches). Trim runs first, then resize.
-- Game sprites: `codex-img convert raw/car.png --trim=4 --resize 400x -o sprites/`. Keep the raw generated image; there's no seed to regenerate it.
+- Game sprites: `codex-img convert raw/car.png --trim=4 --resize 400x -o sprites/`, or the same flags when generating. Keep the raw generated image; there's no seed to regenerate it.
 - With several inputs, `-o` must be a directory ending in `/`.
 
 Resizing uses premultiplied alpha, so the colour stored under transparent pixels (generated images often hide a dark vignette there) can't bleed into the edges. PNG and lossless WebP output also gets the nearest visible colour written under transparent pixels, so engines and other tools that filter without premultiplying don't show a dark halo either. `--no-bleed` turns that off. You don't need to clean transparent pixels yourself.
@@ -54,7 +55,7 @@ It never overwrites existing files or the input. Keep prompts that start with th
 ## Workflow
 
 1. Write the prompt (see below). Save to the path the user wants, or to a sensible project location such as `assets/`. Don't clutter the repo root.
-2. Run with `--json`, and allow a timeout of at least 5 minutes: a single image usually takes 20–60s. stdout has one JSON line per image, with `path`, `size`, `durationMs` and more. Progress goes to stderr. A `warning:` line on stderr means the file was saved under a different extension than requested; use the `path` from the JSON.
+2. Run with `--json`, and allow a timeout of at least 5 minutes: a single image usually takes 20–60s. stdout has one JSON line per image, with `path`, `size`, `durationMs` and more. Progress goes to stderr. A `warning:` line on stderr means the file was saved under a different extension than requested, or unprocessed (for example `--trim` found nothing visible), or that the `.raw` original couldn't be kept; use the `path` from the JSON.
 3. **Look at the result** (open or read the image file) before reporting back. Check that it matches the request, especially any text, counts and composition.
 4. To refine, run again with the previous output as `-i` and a prompt that changes one thing ("change only X; keep everything else unchanged").
 
