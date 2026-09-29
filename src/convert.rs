@@ -38,7 +38,8 @@ Options:
       --output-quality <n>  1-100 for jpeg (default 90) and lossy webp (default 80)
       --lossless            Lossless webp instead of lossy
       --trim[=pad]          Crop transparent borders to the visible pixels, keeping
-                            pad transparent pixels around them (default 0)
+                            pad transparent pixels around them (default 0). An
+                            image with no transparent border is left as it is
       --resize <size>       WxH, Wx or xH (one side keeps the aspect ratio).
                             Resampled with premultiplied alpha, after --trim
       --fit <mode>          How WxH handles another aspect ratio: inside (default,

@@ -43,7 +43,7 @@ EOF
 - `codex-img convert in.png -o out.webp`, or `-f jpeg`, changes the format. Add `--output-quality N` to trade size for quality.
 - `codex-img convert icon.png -c 64` writes `icon.min.png`, a palette PNG, for flat art.
 - `codex-img convert in.png` writes `in.min.png`, lossless recompression only.
-- `--trim` crops transparent borders to the visible pixels; `--trim=4` keeps 4 transparent pixels around them. `--json` reports the crop as `trim: {x, y, width, height}` in input pixels, for placing sprites.
+- `--trim` crops transparent borders to the visible pixels; `--trim=4` keeps 4 transparent pixels around them. An image with no transparent border is left as it is. `--json` reports the crop as `trim: {x, y, width, height}` in input pixels, for placing sprites.
 - `--resize 400x` (or `x300`) keeps the aspect ratio. With `--resize WxH`, `--fit` decides: `inside` (default; fits in the box, one side may be smaller), `cover` (exactly WxH, crops the centre), `contain` (exactly WxH, transparent padding), `fill` (stretches). Trim runs first, then resize.
 - Game sprites: `codex-img convert raw/car.png --trim=4 --resize 400x -o sprites/`, or the same flags when generating. Keep the raw generated image; there's no seed to regenerate it.
 - With several inputs, `-o` must be a directory ending in `/`.

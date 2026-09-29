@@ -115,8 +115,16 @@ impl Transform {
         let mut changed = false;
         let mut trim = None;
         if let Some(padding) = self.trim {
-            let rect = visible_bounds(&rgba, padding).ok_or_else(|| Error::other("--trim: the image has no visible pixels."))?;
-            if (rect.x, rect.y, rect.width, rect.height) != (0, 0, rgba.width(), rgba.height()) {
+            let mut rect = visible_bounds(&rgba).ok_or_else(|| Error::other("--trim: the image has no visible pixels."))?;
+            // No transparent border (every opaque image, JPEGs included): nothing to trim, and
+            // padding alone would only add a border the input never had.
+            if (rect.width, rect.height) != rgba.dimensions() {
+                rect = Rect {
+                    x: rect.x - i64::from(padding),
+                    y: rect.y - i64::from(padding),
+                    width: rect.width + 2 * padding,
+                    height: rect.height + 2 * padding,
+                };
                 rgba = crop_padded(&rgba, rect);
                 changed = true;
             }
@@ -146,20 +154,15 @@ fn bleeds(format: Format, enc: &Encoding) -> bool {
     }
 }
 
-/// Bounding box of the pixels with alpha > 0, grown by `padding`; None if nothing is visible.
-fn visible_bounds(rgba: &RgbaImage, padding: u32) -> Option<Rect> {
+/// Bounding box of the pixels with alpha > 0; None if nothing is visible.
+fn visible_bounds(rgba: &RgbaImage) -> Option<Rect> {
     let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
     for (x, y, pixel) in rgba.enumerate_pixels() {
         if pixel.0[3] > 0 {
             (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
         }
     }
-    (x0 != u32::MAX).then(|| Rect {
-        x: i64::from(x0) - i64::from(padding),
-        y: i64::from(y0) - i64::from(padding),
-        width: x1 - x0 + 1 + 2 * padding,
-        height: y1 - y0 + 1 + 2 * padding,
-    })
+    (x0 != u32::MAX).then(|| Rect { x: i64::from(x0), y: i64::from(y0), width: x1 - x0 + 1, height: y1 - y0 + 1 })
 }
 
 /// Copy `rect` out of `rgba`; parts outside the image become transparent. Pixels are copied, not
@@ -354,8 +357,15 @@ mod tests {
 
         let empty = RgbaImage::new(4, 4);
         assert!(Transform { trim: Some(0), ..Default::default() }.apply(empty, Format::Png, &Encoding::default()).is_err());
+        // No transparent border: padding must not grow the image (a JPEG would get a white frame).
         let opaque = RgbaImage::from_pixel(4, 4, Rgba([1, 2, 3, 255]));
-        assert!(!apply(Transform { trim: Some(0), ..Default::default() }, opaque).changed, "nothing to trim");
+        for padding in [0, 4] {
+            let out = apply(Transform { trim: Some(padding), ..Default::default() }, opaque.clone());
+            assert!(!out.changed && out.image.dimensions() == (4, 4), "padding {padding}");
+            assert_eq!(out.trim, Some(Rect { x: 0, y: 0, width: 4, height: 4 }));
+        }
+        let framed = RgbaImage::from_fn(6, 6, |x, y| Rgba([9, 9, 9, if x == 0 || y == 5 || (x, y) == (5, 0) { 255 } else { 0 }]));
+        assert_eq!(apply(Transform { trim: Some(4), ..Default::default() }, framed).image.dimensions(), (6, 6), "visible pixels reach every edge");
     }
 
     #[test]
