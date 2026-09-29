@@ -88,9 +88,20 @@ codex-img convert hero.png -o hero.webp          # PNG/JPEG/WebP in, any of them
 codex-img convert icon.png -c 64                 # -> icon.min.png, palette PNG
 codex-img convert photo.png                      # -> photo.min.png, lossless recompression only
 codex-img convert shots/*.png -f jpeg -o out/    # several inputs need a directory
+codex-img convert car.png --trim=4 --resize 400x -o sprites/    # crop to content, then resize
+codex-img convert cockpit.png --resize 1920x1080 --fit cover    # exactly 1920x1080, centre crop
 ```
 
-Without `-o`, output goes next to the input as `<name>.<ext>`, or `<name>.min.<ext>` when that would be the input itself. It takes `-o`, `-f`, `-c`, `--dither`, `--output-quality`, `--lossless`, `--json` and `--quiet`, with the same meaning as above. Animated WebP and PNG (APNG) are refused rather than converted, because only the first frame would survive. A file that already matches the request (a lossy WebP converted to WebP with default settings, for example) is copied rather than re-encoded, so it doesn't lose quality again. Existing files, including the input, are never overwritten. Each input is converted independently: if one fails, the others still run and the exit code reports the failure.
+Without `-o`, output goes next to the input as `<name>.<ext>`, or `<name>.min.<ext>` when that would be the input itself. It takes `-o`, `-f`, `-c`, `--dither`, `--output-quality`, `--lossless`, `--json` and `--quiet`, with the same meaning as above, plus:
+
+| Option | |
+|---|---|
+| `--trim[=PAD]` | Crop transparent borders to the visible pixels, keeping `PAD` transparent pixels around them. `--json` reports the crop as `trim: {x, y, width, height}` in input pixels, so sprites can keep their anchor. Opaque images are left as they are |
+| `--resize SIZE` | `WxH`, `Wx` or `xH`, up to 8192 per side. A missing side keeps the aspect ratio. Runs after `--trim` |
+| `--fit MODE` | For `WxH` with another aspect ratio: `inside` (default; fits in the box, so one side may be smaller), `cover` (exactly WxH, crops the centre), `contain` (exactly WxH, pads with transparency, or white in JPEG), `fill` (stretches) |
+| `--no-bleed` | Keep the colour stored under fully transparent pixels (see below) |
+
+Generated images with a transparent background often store a dark vignette under the transparent pixels. It's invisible until something resizes or filters the image without premultiplying alpha, and then it shows up as a dark halo around the edges. `convert` deals with it twice. Its own resize uses premultiplied alpha, so the hidden colour never reaches the result. For PNG and lossless WebP output, it also writes the nearest visible colour under every fully transparent pixel (edge bleed, as texture tools do), so a game engine's texture filtering blends toward the edge colour. Visible pixels and alpha don't change. As a side effect, the file usually gets much smaller, because the noisy hidden colours are gone. Lossy WebP replaces those colours on its own, JPEG has no alpha, and palette PNGs (`-c`) are left alone so the bled colours don't use up palette entries. `--no-bleed` keeps the stored colours as they are; use it with `--lossless` when every pixel must be kept exactly, including invisible ones. The `--json` output also has `inputSize`. Animated WebP and PNG (APNG) are refused rather than converted, because only the first frame would survive. A file that already matches the request (a lossy WebP converted to WebP with default settings, for example) is copied rather than re-encoded, so it doesn't lose quality again. Existing files, including the input, are never overwritten. Each input is converted independently: if one fails, the others still run and the exit code reports the failure.
 
 A bare `convert` as the first argument always runs this subcommand. A prompt that starts with the word still works when it's quoted, e.g. `codex-img "convert this sketch into a watercolor" -i sketch.png`.
 

@@ -3,6 +3,7 @@
 use crate::cli;
 use crate::error::{Error, Result};
 use crate::images::{self, Format};
+use crate::transform::{self, Fit, Resize, Transform};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -15,6 +16,7 @@ pub struct ConvertOptions {
     pub output: Option<String>,
     pub format: Option<Format>,
     pub encoding: images::Encoding,
+    pub transform: Transform,
     pub json: bool,
     pub quiet: bool,
 }
@@ -35,6 +37,17 @@ Options:
       --dither              Dither when quantizing
       --output-quality <n>  1-100 for jpeg (default 90) and lossy webp (default 80)
       --lossless            Lossless webp instead of lossy
+      --trim[=pad]          Crop transparent borders to the visible pixels, keeping
+                            pad transparent pixels around them (default 0)
+      --resize <size>       WxH, Wx or xH (one side keeps the aspect ratio).
+                            Resampled with premultiplied alpha, after --trim
+      --fit <mode>          How WxH handles another aspect ratio: inside (default,
+                            fits in the box), cover (fills it, crops the centre),
+                            contain (fits, pads with transparency), fill (stretches)
+      --no-bleed            Keep the colour stored under fully transparent pixels.
+                            By default PNG and lossless webp output gets the nearest
+                            visible colour there, so filtering in game engines and
+                            other tools can't pull a dark halo into the edges
       --json                Print one JSON object per file to stdout
       --quiet               No progress on stderr
 
@@ -43,11 +56,13 @@ PNG output is always recompressed losslessly. Existing files are never overwritt
 Examples:
   codex-img convert hero.png -o hero.webp     # lossy, quality 80
   codex-img convert icon.png -c 64            # -> icon.min.png
-  codex-img convert shots/*.png -f jpeg -o out/"#
+  codex-img convert shots/*.png -f jpeg -o out/
+  codex-img convert car.png --trim=4 --resize 400x -o sprites/
+  codex-img convert cockpit.png --resize 1920x1080 --fit cover"#
 }
 
 pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
-    let mut opts = ConvertOptions { inputs: Vec::new(), output: None, format: None, encoding: images::Encoding::default(), json: false, quiet: false };
+    let mut opts = ConvertOptions { inputs: Vec::new(), output: None, format: None, encoding: images::Encoding::default(), transform: Transform::default(), json: false, quiet: false };
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         if arg == "--" {
@@ -72,6 +87,10 @@ pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
             "--dither" => opts.encoding.dither = true,
             "--output-quality" => opts.encoding.quality = Some(cli::parse_output_quality(&value()?)?),
             "--lossless" => opts.encoding.lossless = true,
+            "--trim" => opts.transform.trim = Some(inline.as_deref().map(transform::parse_trim_padding).transpose()?.unwrap_or(0)),
+            "--resize" => opts.transform.resize = Some(Resize::parse(&value()?)?),
+            "--fit" => opts.transform.fit = Some(Fit::parse(&value()?)?),
+            "--no-bleed" => opts.transform.no_bleed = true,
             "--json" => opts.json = true,
             "--quiet" => opts.quiet = true,
             "-h" | "--help" => return Ok(None),
@@ -91,6 +110,7 @@ pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
     }
     // Without -f/-o the format comes from each input; convert_one checks again then.
     opts.encoding.check(opts.format)?;
+    opts.transform.check()?;
     Ok(Some(opts))
 }
 
@@ -143,22 +163,28 @@ fn convert_one(input: &Path, opts: &ConvertOptions) -> Result<serde_json::Value>
     if same_file(&target, input) {
         return Err(Error::usage(format!("Output would overwrite the input {}; choose another -o.", input.display())));
     }
-    let (path, dimensions, output_quality) = cli::save_converted(&bytes, format, &opts.encoding, &target)?;
-    let written = std::fs::metadata(&path).map(|m| m.len()).unwrap_or_default();
+    let converted = cli::save_converted(&bytes, format, &opts.encoding, &opts.transform, &target)?;
+    let written = std::fs::metadata(&converted.path).map(|m| m.len()).unwrap_or_default();
+    let size = |(w, h): (u32, u32)| format!("{w}x{h}");
     let mut info = json!({
-        "path": path.display().to_string(),
+        "path": converted.path.display().to_string(),
         "input": input.display().to_string(),
         "format": format.name(),
         "bytes": written,
         "inputBytes": bytes.len(),
-        "size": format!("{}x{}", dimensions.0, dimensions.1),
+        "size": size(converted.size),
+        "inputSize": size(converted.input_size),
         "durationMs": started.elapsed().as_millis() as u64,
     });
+    // Where the trimmed content sat in the input, to keep sprite anchors in place.
+    if let Some(rect) = converted.trim {
+        info["trim"] = json!({"x": rect.x, "y": rect.y, "width": rect.width, "height": rect.height});
+    }
     if let Some(colors) = opts.encoding.colors {
         info["colors"] = json!(colors);
     }
     // Same key as generation's --json: the lossy quality actually applied, defaults included.
-    if let Some(quality) = output_quality {
+    if let Some(quality) = converted.output_quality {
         info["outputQuality"] = json!(quality);
     }
     Ok(info)
@@ -216,6 +242,12 @@ mod tests {
         assert!(usage_error(&["a.png", "-o", "b.png", "--output-quality", "50"]).contains("PNG"));
         assert!(usage_error(&["a.png", "-f", "jpeg", "--lossless"]).contains("WebP"));
         assert!(usage_error(&["a.png", "-n", "2"]).contains("Unknown convert option"));
+
+        let t = parse(&args(&["a.png", "--trim=8", "--resize", "512x512", "--fit=cover", "--no-bleed"])).unwrap().unwrap().transform;
+        assert_eq!((t.trim, t.resize.and_then(|r| r.width), t.fit, t.no_bleed), (Some(8), Some(512), Some(Fit::Cover), true));
+        assert_eq!(parse(&args(&["a.png", "--trim"])).unwrap().unwrap().transform.trim, Some(0));
+        assert!(usage_error(&["a.png", "--fit", "cover"]).contains("--resize"));
+        assert!(usage_error(&["a.png", "--resize", "big"]).contains("WxH"));
     }
 
     fn png_file(dir: &Path, name: &str) -> PathBuf {

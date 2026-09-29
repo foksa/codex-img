@@ -1,6 +1,7 @@
 use crate::backend::{Generated, DEFAULT_ROUTING_MODEL};
 use crate::error::{Error, Result};
 use crate::images::{self, Format, MAX_EDIT_IMAGES};
+use crate::transform;
 use crate::util;
 use serde_json::{json, Map, Value};
 use std::io::Write;
@@ -17,8 +18,8 @@ Usage:
   codex-img [options] "<prompt>"
   echo "<prompt>" | codex-img [options] -
   codex-img status [--json]   Check the Codex login offline (uses no quota)
-  codex-img convert <input>... [-o path] [-f fmt] [-c n]
-                              Convert existing images locally (no quota);
+  codex-img convert <input>... [-o path] [-f fmt] [-c n] [--trim] [--resize WxH]
+                              Convert, trim or resize existing images locally (no quota);
                               see `codex-img convert --help`
 
 Options:
@@ -257,17 +258,35 @@ fn encode_output(bytes: &[u8], actual: Format, wanted: Format, enc: &images::Enc
     Ok((out, quality))
 }
 
-/// `convert` subcommand: write `bytes` as `wanted` to a new file. Returns the path, pixel size and
-/// applied lossy quality.
+/// What `save_converted` wrote.
+pub struct Converted {
+    pub path: PathBuf,
+    pub input_size: (u32, u32),
+    pub size: (u32, u32),
+    /// Lossy quality codex-img applied, if it did a lossy encode.
+    pub output_quality: Option<u8>,
+    pub trim: Option<transform::Rect>,
+}
+
+/// `convert` subcommand: apply `transform` and write `bytes` as `wanted` to a new file.
 /// Unlike generated images, a local input that doesn't fully decode is an error, not something to
 /// copy through: the fast paths (same format, best-effort optimization) would otherwise pass it on.
-pub fn save_converted(bytes: &[u8], wanted: Format, enc: &images::Encoding, path: &Path) -> Result<(PathBuf, (u32, u32), Option<u8>)> {
+pub fn save_converted(bytes: &[u8], wanted: Format, enc: &images::Encoding, transform: &transform::Transform, path: &Path) -> Result<Converted> {
     let actual = images::sniff(bytes).ok_or_else(|| Error::other("Input is not a PNG, JPEG or WebP image."))?;
-    let dimensions = images::validate(bytes)?;
-    let (out, quality) = encode_output(bytes, actual, wanted, enc)?;
+    let rgba = images::decode(bytes)?;
+    let input_size = rgba.dimensions();
+    let applied = transform.apply(rgba, wanted, enc)?;
+    let size = applied.image.dimensions();
+    let (out, output_quality) = if applied.changed {
+        let encoded = images::encode(&applied.image, wanted, enc)?;
+        let out = if wanted == Format::Png { images::optimize_png(&encoded).unwrap_or(encoded) } else { encoded };
+        (out, enc.lossy_quality(wanted))
+    } else {
+        encode_output(bytes, actual, wanted, enc)?
+    };
     create_parent(path)?;
     write_new(path, &out)?;
-    Ok((path.to_path_buf(), dimensions, quality))
+    Ok(Converted { path: path.to_path_buf(), input_size, size, output_quality, trim: applied.trim })
 }
 
 fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {

@@ -237,13 +237,20 @@ fn is_animated(bytes: &[u8]) -> bool {
 /// Decode `bytes` (PNG, JPEG or WebP) and re-encode as `wanted`. JPEG has no alpha, so transparency
 /// is flattened onto white. WebP is lossy unless `lossless` is set; both keep transparency.
 pub fn convert(bytes: &[u8], wanted: Format, enc: &Encoding) -> Result<Vec<u8>> {
+    let rgba = image::load_from_memory(bytes)
+        .map_err(|e| Error::other(format!("Could not convert image to {}: {e}", wanted.name())))?
+        .to_rgba8();
+    encode(&rgba, wanted, enc)
+}
+
+/// Encode decoded pixels as `wanted`, with the same rules as `convert`.
+pub fn encode(rgba: &image::RgbaImage, wanted: Format, enc: &Encoding) -> Result<Vec<u8>> {
     let failed = |e: String| Error::other(format!("Could not convert image to {}: {e}", wanted.name()));
-    let rgba = image::load_from_memory(bytes).map_err(|e| failed(e.to_string()))?.to_rgba8();
     match (wanted, enc.colors) {
-        (Format::Png, Some(colors)) => quantize_png(&rgba, colors, enc.dither).map_err(failed),
-        (Format::Png, None) => encode_png(&rgba).map_err(failed),
-        (Format::Jpeg, _) => encode_jpeg(&rgba, enc.quality.unwrap_or(JPEG_QUALITY)).map_err(failed),
-        (Format::Webp, _) => encode_webp(&rgba, enc.lossless, enc.quality.unwrap_or(WEBP_QUALITY)).map_err(failed),
+        (Format::Png, Some(colors)) => quantize_png(rgba, colors, enc.dither).map_err(failed),
+        (Format::Png, None) => encode_png(rgba).map_err(failed),
+        (Format::Jpeg, _) => encode_jpeg(rgba, enc.quality.unwrap_or(JPEG_QUALITY)).map_err(failed),
+        (Format::Webp, _) => encode_webp(rgba, enc.lossless, enc.quality.unwrap_or(WEBP_QUALITY)).map_err(failed),
     }
 }
 
@@ -252,17 +259,17 @@ pub fn needs_encoding(bytes: &[u8], actual: Format, wanted: Format, enc: &Encodi
     actual != wanted || !enc.is_satisfied_by(bytes, wanted)
 }
 
-/// Fully decode the image (header checks alone miss damaged pixel data); returns its pixel size.
+/// Fully decode the image (header checks alone miss damaged pixel data).
 /// Animated input is refused: decoding keeps only the first frame, and nothing here can write
 /// animation back, so any conversion (even same-format) would silently drop the rest.
-pub fn validate(bytes: &[u8]) -> Result<(u32, u32)> {
+pub fn decode(bytes: &[u8]) -> Result<image::RgbaImage> {
     if is_animated(bytes) {
         return Err(Error::other(
             "Input is animated; codex-img converts still images only and would keep just the first frame.",
         ));
     }
     let image = image::load_from_memory(bytes).map_err(|e| Error::other(format!("Input image is damaged or unsupported: {e}")))?;
-    Ok((image.width(), image.height()))
+    Ok(image.to_rgba8())
 }
 
 /// Lossless PNG recompression (oxipng): typically halves backend PNGs without touching a pixel.
@@ -454,7 +461,7 @@ pub(crate) mod tests {
         webp.extend(body);
         assert!(is_animated(&webp));
         assert_eq!(webp_is_lossless(&webp), None);
-        assert!(validate(&webp).unwrap_err().message.contains("animated"));
+        assert!(decode(&webp).unwrap_err().message.contains("animated"));
 
         // APNG: an acTL chunk between IHDR and IDAT.
         let png = gradient();
@@ -465,12 +472,12 @@ pub(crate) mod tests {
         apng.extend_from_slice(&[0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0]); // 2 frames, loop forever, crc
         apng.extend_from_slice(&png[ihdr_end..]);
         assert!(is_animated(&apng));
-        assert!(validate(&apng).unwrap_err().message.contains("animated"));
+        assert!(decode(&apng).unwrap_err().message.contains("animated"));
 
         // Still images are unaffected.
         let still = convert(&png, Format::Webp, &Encoding::default()).unwrap();
         assert!(!is_animated(&png) && !is_animated(&still));
-        assert!(validate(&still).is_ok());
+        assert!(decode(&still).is_ok());
     }
 
     #[test]

@@ -4,6 +4,7 @@ mod cli;
 mod convert;
 mod error;
 mod images;
+mod transform;
 mod util;
 
 use backend::{Backend, Request, Transport};
