@@ -64,7 +64,8 @@ Options:
   -v, --version             Show version
 
 Output is always PNG. Not supported here: -f/--format, -c/--colors, --dither,
---output-quality, --lossless, --via-responses, --model.
+--output-quality, --lossless, --trim, --resize, --fit, --no-bleed,
+--via-responses, --model.
 Exit codes: 0 ok, 1 error, 2 auth, 3 quota, 4 moderation, 64 usage."""
 
 
@@ -96,7 +97,7 @@ def parse(args):
         "-b": "background", "--background": "background", "-n": "count", "--count": "count",
     }
     unsupported = {"-f", "--format", "--via-responses", "-m", "--model", "-c", "--colors", "--dither",
-                   "--output-quality", "--lossless"}
+                   "--output-quality", "--lossless", "--trim", "--resize", "--fit", "--no-bleed"}
     flags = {"--json": "json", "--quiet": "quiet", "-h": "help", "--help": "help", "-v": "version", "--version": "version"}
     values, seen, positionals = {"image": []}, set(), []
     it = iter(args)
@@ -112,7 +113,7 @@ def parse(args):
             name, inline = arg.split("=", 1)
         if name in unsupported:
             raise Fail(USAGE, f"{name} is not supported by the Python fallback (PNG only, direct route). "
-                              "Install the codex-img binary, or convert the PNG afterwards.")
+                              "Install the codex-img binary, or convert, trim or resize the PNG afterwards.")
         if name in flags:
             seen.add(flags[name])
             continue

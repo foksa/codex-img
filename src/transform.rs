@@ -106,6 +106,11 @@ impl Transform {
         }
     }
 
+    /// Whether this may change the image's pixel size (trim or resize was asked for).
+    pub fn reshapes(&self) -> bool {
+        self.trim.is_some() || self.resize.is_some()
+    }
+
     pub fn apply(&self, mut rgba: RgbaImage, format: Format, enc: &Encoding) -> Result<Applied> {
         let mut changed = false;
         let mut trim = None;
