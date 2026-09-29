@@ -63,7 +63,7 @@ codex-img status --json                                     # login check, uses 
 | `-m, --model` | Routing model for `--via-responses` (default `gpt-5.5`) |
 | `--trim`, `--resize`, `--fit`, `--hard-alpha`, `--no-enlarge`, `--no-bleed` | Trim, resize, hard alpha and edge bleed before saving, as in [`convert`](#converting-existing-images). With `--trim`, `--resize` or `--hard-alpha` the untouched original is also kept as `<name>.raw.<ext>`, since quota was spent on it and there's no seed to regenerate it |
 | `-n, --count` | Images to generate in parallel (1–10). Each one is a separate request |
-| `--json` | Prints one JSON line per image: path, size, quality (the backend's), `outputQuality` (the JPEG/WebP quality codex-img applied, when it encoded lossily), revised prompt, usage, duration. After `--trim`/`--resize`: `size` is the saved file's, plus `rawSize` (the backend's), `rawPath` and `trim` |
+| `--json` | Prints one JSON line per image: path, size, quality (the backend's), `outputQuality` (the JPEG/WebP quality codex-img applied, when it encoded lossily), revised prompt, usage, duration. After `--trim`, `--resize` or `--hard-alpha`: `size` is the saved file's, plus `rawSize` (the backend's), `rawPath` and `trim` |
 | `--quiet` | No progress output on stderr |
 
 PNG output is always recompressed losslessly with oxipng. That roughly halves the backend's PNGs (946 KB → 462 KB in testing) without changing a visible pixel. The only pixels that change are fully transparent ones, which get the nearest edge colour (see edge bleed under [Converting existing images](#converting-existing-images); `--no-bleed` turns it off).
