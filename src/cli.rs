@@ -37,9 +37,11 @@ Options:
       --dither              Dither when quantizing (smoother gradients/photos,
                             larger files)
       --trim[=pad]          Crop transparent borders to the visible pixels
+      --hard-alpha[=n]      Every pixel fully solid (alpha above n, default 16) or
+                            fully transparent; for pixel art
       --resize <size>       WxH, Wx or xH, after --trim; --fit inside (default) |
-                            cover | contain | fill for WxH. With --trim or --resize
-                            the original is also kept, as <name>.raw.png
+                            cover | contain | fill for WxH. With --trim, --resize or
+                            --hard-alpha the original is also kept, as <name>.raw.png
       --no-bleed            Keep the colour under fully transparent pixels (by
                             default PNG and lossless webp get the nearest edge colour)
   -s, --size <WxH>          Shape hint, e.g. 1536x1024, 1024x1536, auto. For exact
@@ -148,6 +150,7 @@ pub fn parse(args: &[String]) -> Result<Command> {
             "--dither" => "dither",
             "--lossless" => "lossless",
             "--trim" => "trim",
+            "--hard-alpha" => "hard-alpha",
             "--resize" => "resize",
             "--fit" => "fit",
             "--no-bleed" => "no-bleed",
@@ -155,9 +158,9 @@ pub fn parse(args: &[String]) -> Result<Command> {
             "-v" | "--version" => "version",
             _ => return Err(Error::usage(format!("Unknown option: {arg}"))),
         };
-        // --trim takes its padding only inline (--trim=8): a bare value after it is the prompt.
+        // --trim and --hard-alpha take values only inline (--trim=8): a bare word after them is the prompt.
         if matches!(key, "json" | "quiet" | "via-responses" | "dither" | "lossless" | "no-bleed" | "help" | "version")
-            || (key == "trim" && inline.is_none())
+            || (matches!(key, "trim" | "hard-alpha") && inline.is_none())
         {
             flags.push(key);
         } else {
@@ -200,6 +203,10 @@ pub fn parse(args: &[String]) -> Result<Command> {
     // The format may still be unknown here (it defaults to PNG); generate() checks again.
     encoding.check(format)?;
     let transform = transform::Transform {
+        hard_alpha: match last("hard-alpha") {
+            Some(threshold) => Some(transform::parse_hard_alpha(&threshold)?),
+            None => flags.contains(&"hard-alpha").then_some(transform::FAINT_ALPHA),
+        },
         trim: match last("trim") {
             Some(padding) => Some(transform::parse_trim_padding(&padding)?),
             None => flags.contains(&"trim").then_some(0),
@@ -302,7 +309,7 @@ struct Processed {
 fn process(bytes: &[u8], actual: Format, wanted: Format, enc: &images::Encoding, transform: &transform::Transform, lenient: bool) -> Result<Processed> {
     let rgba = match images::decode(bytes) {
         Ok(rgba) => rgba,
-        Err(_) if lenient && !transform.reshapes() => {
+        Err(_) if lenient && !transform.edits() => {
             let (bytes, output_quality) = encode_output(bytes, actual, wanted, enc)?;
             return Ok(Processed { bytes, output_quality, sizes: None, trim: None });
         }
@@ -382,7 +389,7 @@ pub fn save_image(bytes: &[u8], actual: Format, wanted: Format, enc: &images::En
                 trim: processed.trim,
                 raw_path: None,
             };
-            if transform.reshapes() {
+            if transform.edits() {
                 saved.size = processed.sizes.map(|(_, size)| size);
                 let raw = raw_path(path, actual);
                 match write_new(&raw, bytes) {
@@ -507,6 +514,8 @@ mod tests {
         assert_eq!(run(&["--resize=1536x1024", "--fit", "cover", "x"]).transform.fit, Some(transform::Fit::Cover));
         assert!(usage_error(&["--fit", "cover", "x"]).contains("--resize"));
         assert!(usage_error(&["--trim=-1", "x"]).contains("--trim"));
+        assert_eq!(run(&["--hard-alpha", "x"]).transform.hard_alpha, Some(16));
+        assert_eq!(run(&["--hard-alpha=100", "x"]).transform.hard_alpha, Some(100));
         let o = run(&["--via-responses", "-m", "gpt-6-sol", "x"]);
         assert!(o.via_responses);
         assert_eq!(o.model.as_deref(), Some("gpt-6-sol"));

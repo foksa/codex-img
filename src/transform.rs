@@ -6,6 +6,12 @@ use image::{imageops, ImageBuffer, Rgba, RgbaImage};
 
 pub const MAX_SIDE: u32 = 8192;
 const MAX_TRIM_PADDING: u32 = 1024;
+/// Alpha at or below this doesn't count as visible for --trim, and is the --hard-alpha default.
+/// Generated images scatter faint specks (alpha 1-16) over their transparent background, which
+/// would otherwise stop --trim from cropping at all.
+pub const FAINT_ALPHA: u8 = 16;
+/// After resampling, --hard-alpha makes pixels at least half covered solid, keeping the shape's area.
+const RESAMPLED_HARD_ALPHA: u8 = 127;
 /// Catmull-Rom rather than Lanczos3: one negative lobe and no positive outer one, so hard alpha
 /// edges don't grow a faint ring of barely visible pixels.
 const FILTER: imageops::FilterType = imageops::FilterType::CatmullRom;
@@ -60,6 +66,14 @@ impl Resize {
     }
 }
 
+pub fn parse_hard_alpha(value: &str) -> Result<u8> {
+    value
+        .parse::<u8>()
+        .ok()
+        .filter(|n| *n < 255)
+        .ok_or_else(|| Error::usage("--hard-alpha threshold must be an integer from 0 to 254, e.g. --hard-alpha=16."))
+}
+
 pub fn parse_trim_padding(value: &str) -> Result<u32> {
     value
         .parse::<u32>()
@@ -79,7 +93,9 @@ pub struct Rect {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Transform {
-    /// Crop to the visible (alpha > 0) pixels, plus this much transparent padding on each side.
+    /// Make alpha all-or-nothing: above this threshold solid, else fully transparent.
+    pub hard_alpha: Option<u8>,
+    /// Crop to the visible (alpha > FAINT_ALPHA) pixels, plus this much transparent padding on each side.
     pub trim: Option<u32>,
     pub resize: Option<Resize>,
     pub fit: Option<Fit>,
@@ -106,14 +122,18 @@ impl Transform {
         }
     }
 
-    /// Whether this may change the image's pixel size (trim or resize was asked for).
-    pub fn reshapes(&self) -> bool {
-        self.trim.is_some() || self.resize.is_some()
+    /// Whether this edits visible pixels (trim, resize or hard alpha was asked for), as opposed to
+    /// only the colour under transparent ones.
+    pub fn edits(&self) -> bool {
+        self.trim.is_some() || self.resize.is_some() || self.hard_alpha.is_some()
     }
 
     pub fn apply(&self, mut rgba: RgbaImage, format: Format, enc: &Encoding) -> Result<Applied> {
         let mut changed = false;
         let mut trim = None;
+        if let Some(threshold) = self.hard_alpha {
+            changed |= harden_alpha(&mut rgba, threshold);
+        }
         if let Some(padding) = self.trim {
             let mut rect = visible_bounds(&rgba).ok_or_else(|| Error::other("--trim: the image has no visible pixels."))?;
             // No transparent border (every opaque image, JPEGs included): nothing to trim, and
@@ -134,6 +154,9 @@ impl Transform {
             if let Some(resized) = resize(&rgba, size, self.fit.unwrap_or(Fit::Inside)) {
                 rgba = resized;
                 changed = true;
+                if self.hard_alpha.is_some() {
+                    harden_alpha(&mut rgba, RESAMPLED_HARD_ALPHA);
+                }
             }
         }
         if !self.no_bleed && bleeds(format, enc) {
@@ -154,11 +177,22 @@ fn bleeds(format: Format, enc: &Encoding) -> bool {
     }
 }
 
-/// Bounding box of the pixels with alpha > 0; None if nothing is visible.
+/// Alpha above `threshold` becomes 255, the rest 0. Returns whether any pixel changed.
+fn harden_alpha(rgba: &mut RgbaImage, threshold: u8) -> bool {
+    let mut changed = false;
+    for pixel in rgba.pixels_mut() {
+        let alpha = if pixel.0[3] > threshold { 255 } else { 0 };
+        changed |= pixel.0[3] != alpha;
+        pixel.0[3] = alpha;
+    }
+    changed
+}
+
+/// Bounding box of the pixels with alpha > FAINT_ALPHA; None if nothing is visible.
 fn visible_bounds(rgba: &RgbaImage) -> Option<Rect> {
     let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
     for (x, y, pixel) in rgba.enumerate_pixels() {
-        if pixel.0[3] > 0 {
+        if pixel.0[3] > FAINT_ALPHA {
             (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
         }
     }
@@ -366,6 +400,39 @@ mod tests {
         }
         let framed = RgbaImage::from_fn(6, 6, |x, y| Rgba([9, 9, 9, if x == 0 || y == 5 || (x, y) == (5, 0) { 255 } else { 0 }]));
         assert_eq!(apply(Transform { trim: Some(4), ..Default::default() }, framed).image.dimensions(), (6, 6), "visible pixels reach every edge");
+    }
+
+    #[test]
+    fn trim_ignores_faint_specks_and_hard_alpha_makes_edges_binary() {
+        // Like generated sprites: "solid" pixels at alpha 253, a soft rim, and faint specks far out.
+        let hazy = || {
+            let mut image = sprite();
+            for (x, y) in [(1, 1), (38, 28)] {
+                image.put_pixel(x, y, Rgba([10, 10, 20, 9]));
+            }
+            for pixel in image.pixels_mut().filter(|p| p.0[3] == 255) {
+                pixel.0[3] = 253;
+            }
+            for x in 12..22 {
+                image.put_pixel(x, 7, Rgba([230, 40, 30, 90]));
+            }
+            image
+        };
+        let out = apply(Transform { trim: Some(0), ..Default::default() }, hazy());
+        assert_eq!(out.trim, Some(Rect { x: 12, y: 7, width: 10, height: 7 }), "specks at alpha 9 don't count");
+        assert_eq!(out.image.get_pixel(0, 0).0[3], 90, "soft edges stay soft without --hard-alpha");
+
+        let hard = Transform { hard_alpha: Some(FAINT_ALPHA), trim: Some(0), ..Default::default() };
+        let out = apply(hard, hazy());
+        assert!(out.image.pixels().all(|p| p.0[3] == 255), "rim at 90 and body at 253 become solid");
+        assert_eq!(apply(Transform { hard_alpha: Some(100), trim: Some(0), ..Default::default() }, hazy()).image.height(), 6);
+
+        let resized = Transform { hard_alpha: Some(FAINT_ALPHA), resize: Some(Resize::parse("15x").unwrap()), ..Default::default() };
+        let out = apply(resized, hazy());
+        assert!(out.image.pixels().all(|p| p.0[3] == 0 || p.0[3] == 255), "resampling must not soften hard edges");
+        assert!(out.image.pixels().any(|p| p.0[3] == 255));
+        assert!(Transform { hard_alpha: Some(FAINT_ALPHA), ..Default::default() }.edits());
+        assert_eq!((parse_hard_alpha("16").unwrap(), parse_hard_alpha("255").is_err()), (16, true));
     }
 
     #[test]
