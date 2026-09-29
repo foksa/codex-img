@@ -98,7 +98,7 @@ Without `-o`, output goes next to the input as `<name>.<ext>`, or `<name>.min.<e
 
 | Option | |
 |---|---|
-| `--trim[=PAD]` | Crop transparent borders to the visible pixels, keeping `PAD` transparent pixels around them. `--json` reports the crop as `trim: {x, y, width, height}` in input pixels, so sprites can keep their anchor. Opaque images are left as they are |
+| `--trim[=PAD]` | Crop transparent borders to the visible pixels, keeping `PAD` transparent pixels around them. `--json` reports the crop as `trim: {x, y, width, height}` in input pixels, so sprites can keep their anchor. An image with no transparent border (any opaque image, every JPEG) is left as it is, padding included |
 | `--resize SIZE` | `WxH`, `Wx` or `xH`, up to 8192 per side. A missing side keeps the aspect ratio. Runs after `--trim` |
 | `--fit MODE` | For `WxH` with another aspect ratio: `inside` (default; fits in the box, so one side may be smaller), `cover` (exactly WxH, crops the centre), `contain` (exactly WxH, pads with transparency, or white in JPEG), `fill` (stretches) |
 | `--no-bleed` | Keep the colour stored under fully transparent pixels (see below) |
