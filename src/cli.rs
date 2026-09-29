@@ -41,7 +41,8 @@ Options:
                             fully transparent; for pixel art
       --resize <size>       WxH, Wx or xH, after --trim; --fit inside (default) |
                             cover | contain | fill for WxH. With --trim, --resize or
-                            --hard-alpha the original is also kept, as <name>.raw.png
+                            --hard-alpha the original is also kept, as <name>.raw.png.
+                            --no-enlarge makes --resize only shrink
       --no-bleed            Keep the colour under fully transparent pixels (by
                             default PNG and lossless webp get the nearest edge colour)
   -s, --size <WxH>          Shape hint, e.g. 1536x1024, 1024x1536, auto. For exact
@@ -154,12 +155,13 @@ pub fn parse(args: &[String]) -> Result<Command> {
             "--resize" => "resize",
             "--fit" => "fit",
             "--no-bleed" => "no-bleed",
+            "--no-enlarge" => "no-enlarge",
             "-h" | "--help" => "help",
             "-v" | "--version" => "version",
             _ => return Err(Error::usage(format!("Unknown option: {arg}"))),
         };
         // --trim and --hard-alpha take values only inline (--trim=8): a bare word after them is the prompt.
-        if matches!(key, "json" | "quiet" | "via-responses" | "dither" | "lossless" | "no-bleed" | "help" | "version")
+        if matches!(key, "json" | "quiet" | "via-responses" | "dither" | "lossless" | "no-bleed" | "no-enlarge" | "help" | "version")
             || (matches!(key, "trim" | "hard-alpha") && inline.is_none())
         {
             flags.push(key);
@@ -214,6 +216,7 @@ pub fn parse(args: &[String]) -> Result<Command> {
         resize: last("resize").map(|v| transform::Resize::parse(&v)).transpose()?,
         fit: last("fit").map(|v| transform::Fit::parse(&v)).transpose()?,
         no_bleed: flags.contains(&"no-bleed"),
+        no_enlarge: flags.contains(&"no-enlarge"),
     };
     transform.check()?;
     let via_responses = flags.contains(&"via-responses");
@@ -516,6 +519,8 @@ mod tests {
         assert!(usage_error(&["--trim=-1", "x"]).contains("--trim"));
         assert_eq!(run(&["--hard-alpha", "x"]).transform.hard_alpha, Some(16));
         assert_eq!(run(&["--hard-alpha=100", "x"]).transform.hard_alpha, Some(100));
+        assert!(run(&["--resize", "400x", "--no-enlarge", "x"]).transform.no_enlarge);
+        assert!(usage_error(&["--no-enlarge", "x"]).contains("--resize"));
         let o = run(&["--via-responses", "-m", "gpt-6-sol", "x"]);
         assert!(o.via_responses);
         assert_eq!(o.model.as_deref(), Some("gpt-6-sol"));

@@ -101,6 +101,8 @@ pub struct Transform {
     pub fit: Option<Fit>,
     /// Keep the colour stored under fully transparent pixels instead of bleeding edge colours in.
     pub no_bleed: bool,
+    /// Never scale up: --resize only shrinks, and leaves smaller images at their size.
+    pub no_enlarge: bool,
 }
 
 pub struct Applied {
@@ -114,6 +116,7 @@ pub struct Applied {
 impl Transform {
     pub fn check(&self) -> Result<()> {
         match (self.fit, self.resize) {
+            _ if self.no_enlarge && self.resize.is_none() => Err(Error::usage("--no-enlarge only applies with --resize.")),
             (Some(_), None) => Err(Error::usage("--fit only applies with --resize.")),
             (Some(_), Some(Resize { width: None, .. } | Resize { height: None, .. })) => {
                 Err(Error::usage("--fit needs both sides in --resize (WxH); with one side the aspect ratio decides the other."))
@@ -151,7 +154,7 @@ impl Transform {
             trim = Some(rect);
         }
         if let Some(size) = self.resize {
-            if let Some(resized) = resize(&rgba, size, self.fit.unwrap_or(Fit::Inside)) {
+            if let Some(resized) = resize(&rgba, size, self.fit.unwrap_or(Fit::Inside), self.no_enlarge) {
                 rgba = resized;
                 changed = true;
                 if self.hard_alpha.is_some() {
@@ -221,8 +224,10 @@ fn inside(from: (u32, u32), width: u32, height: u32) -> (u32, u32) {
     }
 }
 
-/// None when the image already has the requested size.
-fn resize(rgba: &RgbaImage, size: Resize, fit: Fit) -> Option<RgbaImage> {
+/// None when the image already has the requested size. With `no_enlarge` the scale factor is at
+/// most 1: `inside` keeps a smaller image as it is, `cover` still crops to the box's aspect ratio,
+/// `contain` pads the unscaled image, and `fill` caps each side on its own.
+fn resize(rgba: &RgbaImage, size: Resize, fit: Fit, no_enlarge: bool) -> Option<RgbaImage> {
     let (w, h) = rgba.dimensions();
     let (width, height) = match (size.width, size.height) {
         (Some(width), Some(height)) => (width, height),
@@ -230,14 +235,16 @@ fn resize(rgba: &RgbaImage, size: Resize, fit: Fit) -> Option<RgbaImage> {
         (None, Some(height)) => (scale(w, height, h), height),
         (None, None) => return None,
     };
+    let capped = |(iw, ih): (u32, u32)| if no_enlarge && (iw > w || ih > h) { (w, h) } else { (iw, ih) };
     let out = match fit {
+        Fit::Fill if no_enlarge => resample(rgba, width.min(w), height.min(h)),
         Fit::Fill => resample(rgba, width, height),
         Fit::Inside => {
-            let (iw, ih) = inside((w, h), width, height);
+            let (iw, ih) = capped(inside((w, h), width, height));
             resample(rgba, iw, ih)
         }
         Fit::Contain => {
-            let (iw, ih) = inside((w, h), width, height);
+            let (iw, ih) = capped(inside((w, h), width, height));
             let scaled = resample(rgba, iw, ih);
             let mut canvas = RgbaImage::new(width, height);
             imageops::replace(&mut canvas, &scaled, i64::from((width - iw) / 2), i64::from((height - ih) / 2));
@@ -251,7 +258,11 @@ fn resize(rgba: &RgbaImage, size: Resize, fit: Fit) -> Option<RgbaImage> {
                 (w, scale(w, height, width).min(h))
             };
             let cropped = imageops::crop_imm(rgba, (w - cw) / 2, (h - ch) / 2, cw, ch).to_image();
-            resample(&cropped, width, height)
+            if no_enlarge && (width > cw || height > ch) {
+                cropped
+            } else {
+                resample(&cropped, width, height)
+            }
         }
     };
     (out != *rgba).then_some(out)
@@ -453,6 +464,21 @@ mod tests {
         let boxed = apply(t, wide.clone()).image;
         assert_eq!(boxed.get_pixel(50, 0).0[3], 0, "contain pads with transparency");
         assert_eq!(boxed.get_pixel(50, 50).0, [50, 100, 150, 255]);
+
+        // --no-enlarge: shrinking is unchanged, growing is capped at the original scale.
+        let capped = |resize: &str, fit| {
+            let t = Transform { resize: Some(Resize::parse(resize).unwrap()), fit, no_enlarge: true, ..Default::default() };
+            let out = apply(t, wide.clone());
+            (out.image.dimensions(), out.changed)
+        };
+        assert_eq!(capped("400x", None), ((400, 225), true));
+        assert_eq!(capped("3000x", None), ((1672, 941), false), "already smaller: left as it is");
+        assert_eq!(capped("2000x2000", None), ((1672, 941), false));
+        assert_eq!(capped("2000x2000", Some(Fit::Cover)), ((941, 941), true), "still cropped to the box's aspect, not scaled up");
+        assert_eq!(capped("2000x2000", Some(Fit::Contain)), ((2000, 2000), true), "padded around the unscaled image");
+        assert_eq!(capped("2000x500", Some(Fit::Fill)), ((1672, 500), true), "each side capped on its own");
+        let t = Transform { no_enlarge: true, ..Default::default() };
+        assert!(t.check().unwrap_err().message.contains("--resize"));
 
         let same = Transform { resize: Some(Resize::parse("1672x").unwrap()), ..Default::default() };
         assert!(!apply(same, wide).changed, "already the right size");

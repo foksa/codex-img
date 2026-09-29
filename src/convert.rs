@@ -49,6 +49,7 @@ Options:
       --fit <mode>          How WxH handles another aspect ratio: inside (default,
                             fits in the box), cover (fills it, crops the centre),
                             contain (fits, pads with transparency), fill (stretches)
+      --no-enlarge          Only shrink: --resize leaves smaller images at their size
       --no-bleed            Keep the colour stored under fully transparent pixels.
                             By default PNG and lossless webp output gets the nearest
                             visible colour there, so filtering in game engines and
@@ -63,7 +64,7 @@ Examples:
   codex-img convert icon.png -c 64            # -> icon.min.png
   codex-img convert shots/*.png -f jpeg -o out/
   codex-img convert car.png --trim=4 --resize 400x -o sprites/
-  codex-img convert car.png --hard-alpha --trim --resize 400x300 -c 160   # pixel art
+  codex-img convert car.png --hard-alpha --trim --resize 400x300 --no-enlarge -c 160
   codex-img convert cockpit.png --resize 1920x1080 --fit cover"#
 }
 
@@ -97,6 +98,7 @@ pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
             "--resize" => opts.transform.resize = Some(Resize::parse(&value()?)?),
             "--fit" => opts.transform.fit = Some(Fit::parse(&value()?)?),
             "--no-bleed" => opts.transform.no_bleed = true,
+            "--no-enlarge" => opts.transform.no_enlarge = true,
             "--hard-alpha" => {
                 opts.transform.hard_alpha =
                     Some(inline.as_deref().map(transform::parse_hard_alpha).transpose()?.unwrap_or(transform::FAINT_ALPHA))
@@ -257,6 +259,8 @@ mod tests {
         assert_eq!((t.trim, t.resize.and_then(|r| r.width), t.fit, t.no_bleed), (Some(8), Some(512), Some(Fit::Cover), true));
         assert_eq!(parse(&args(&["a.png", "--trim"])).unwrap().unwrap().transform.trim, Some(0));
         assert_eq!(parse(&args(&["a.png", "--hard-alpha=40"])).unwrap().unwrap().transform.hard_alpha, Some(40));
+        assert!(parse(&args(&["a.png", "--resize", "9x", "--no-enlarge"])).unwrap().unwrap().transform.no_enlarge);
+        assert!(usage_error(&["a.png", "--no-enlarge"]).contains("--resize"));
         assert!(usage_error(&["a.png", "--fit", "cover"]).contains("--resize"));
         assert!(usage_error(&["a.png", "--resize", "big"]).contains("WxH"));
     }
