@@ -3,3 +3,4 @@
 *.webp
 target/
 .DS_Store
+!tests/fixtures/*.png
