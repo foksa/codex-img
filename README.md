@@ -144,6 +144,45 @@ codex-img sheet sprites/*.png -o sheet.png --same-scale --cols 8 --force
 
 An input that can't be read is reported and left out, and the others are still laid out. Labels use a small built-in font that covers ASCII; other characters show as `?`.
 
+### Asset batches
+
+`codex-img batch` builds a whole set of assets, a game's art for example, from one JSON spec. It generates each asset's raw image if it's missing (4 at a time), then converts every raw image into its published form. Raw images are never regenerated, so delete one to re-roll it. Converted files are rewritten only when their bytes change, so an unchanged asset stays unchanged in git.
+
+```json
+{
+  "raw_dir": "raw",
+  "out_dir": "../public/assets",
+  "style": "16-bit arcade pixel art, bold saturated colours, clean dark outlines, no text.",
+  "defaults": {"background": "transparent", "hard_alpha": true, "colors": 160, "trim": true},
+  "assets": {
+    "trees/oak": {"prompt": "A single big old oak tree.", "size": "1536x1024", "max": [420, 380]},
+    "harbor/boat": {"prompt": "A fishing boat, side view.", "size": "1536x1024", "max": [420, 300],
+                    "key": "auto", "key_region": "bottom:30%", "ground_cut": true, "trim_density": 0.15},
+    "harbor/sky": {"prompt": "A wide harbour sky panorama.", "size": "1536x1024", "background": "opaque",
+                   "format": "webp", "hard_alpha": false, "colors": null, "trim": false, "output_quality": 85},
+    "mill/full": {"prompt": "A windmill.", "size": "1024x1536", "publish": false},
+    "mill/sails": {"prompt": "Edit this image: only the four sails, hub centred.", "size": "1024x1024",
+                   "reference": "mill/full", "max": [400, 400]}
+  }
+}
+```
+
+```sh
+codex-img batch art/assets.json                    # everything: generate what's missing, convert all
+codex-img batch art/assets.json harbor trees/oak   # a folder of keys, or one key
+codex-img batch art/assets.json --dry-run          # what would be generated and converted
+codex-img batch art/assets.json --convert-only     # no login, no quota
+```
+
+- **Keys** are paths: the raw image goes to `<raw_dir>/<key>.png` and the output to `<out_dir>/<key>.<format>`. Both directories are relative to the spec file, and default to `raw` and `out`.
+- **`style`** is appended to every prompt. One shared style sentence keeps a large set looking like one game.
+- **`defaults`** apply to every asset. An asset overrides them, and `null` or `false` turns one off, like the sky above.
+- **Generation fields:** `prompt`, `size`, `quality`, `background`, `reference` (other keys whose raw images are passed as `-i`; they're generated first) and `images` (other `-i` files). `publish: false` generates an asset without converting it, for references.
+- **Conversion fields** are the `convert` options with underscores: `format`, `colors`, `dither`, `output_quality`, `lossless`, `trim`, `hard_alpha`, `resize`, `fit`, `no_enlarge`, `no_bleed`, `key`, `key_region`, `ground_cut` and `trim_density`. `max: [W, H]` is short for `resize` with `no_enlarge`.
+- **Validation:** the whole spec is checked before anything runs. An unknown field, a missing reference or a reference loop is an error that names the asset.
+- **Output:** one line per asset and step (`ok`, `skip`, `same`, `FAILED`), or one JSON object each with `--json`. After a login or quota error, no more images are started. The exit code is the worst failure's, so a run with any failure exits non-zero.
+- **Options:** `-j N` sets how many images are generated at the same time (default 4, max 10), and `--generate-only` skips the conversion step.
+
 ## Notes
 
 - **Routes.** By default `codex-img` does what the Codex CLI does: it sends `{prompt, model: "gpt-image-2", size, quality, background}` to `/images/generations`, or to `/images/edits` with `images: [{image_url: "data:…"}]`. Your prompt reaches the image model unchanged. `--via-responses` uses the Responses API with the `image_generation` tool instead (ported from pi-codex-image-gen).

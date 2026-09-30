@@ -566,7 +566,7 @@ pub fn parse_sse(reader: impl BufRead, secrets: &[&str], progress: &dyn Fn(&str)
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::images::tests::PNG_B64;
     use std::io::Write;
@@ -634,10 +634,10 @@ mod tests {
 
     // --- HTTP flow against a local server ---
 
-    struct Captured {
-        path: String,
+    pub(crate) struct Captured {
+        pub path: String,
         headers: Vec<(String, String)>,
-        body: Value,
+        pub body: Value,
     }
 
     impl Captured {
@@ -647,7 +647,7 @@ mod tests {
     }
 
     /// Serve the given (status, content-type, body) responses in order and record each request.
-    fn serve(responses: Vec<(u16, &'static str, String)>) -> (Backend, Arc<Mutex<Vec<Captured>>>) {
+    pub(crate) fn serve(responses: Vec<(u16, &'static str, String)>) -> (Backend, Arc<Mutex<Vec<Captured>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let captured = Arc::new(Mutex::new(Vec::new()));
@@ -682,7 +682,7 @@ mod tests {
         (Backend::new(&base), captured)
     }
 
-    fn creds() -> Credentials {
+    pub(crate) fn creds() -> Credentials {
         Credentials { access_token: "tok_abc".into(), account_id: "acct_123".into() }
     }
 
@@ -700,7 +700,7 @@ mod tests {
         }
     }
 
-    fn direct_response() -> String {
+    pub(crate) fn direct_response() -> String {
         json!({"created": 1, "background": "transparent", "output_format": "png", "quality": "medium", "size": "1536x1024",
             "data": [{"b64_json": PNG_B64, "generation_id": "gen-1"}],
             "usage": {"input_tokens": 16, "output_tokens": 1372, "total_tokens": 1388, "output_tokens_details": {"image_tokens": 1372}}})

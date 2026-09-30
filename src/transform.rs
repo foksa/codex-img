@@ -242,7 +242,7 @@ fn sample_ground(rgba: &RgbaImage) -> Vec<[u8; 3]> {
     let total: u64 = bins.values().map(|(_, count)| count).sum();
     let mut ranked: Vec<([u64; 3], u64)> = bins.into_values().collect();
     // Most common first; ties keep the bins' colour order, so the result is deterministic.
-    ranked.sort_by(|a, b| b.1.cmp(&a.1));
+    ranked.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
     let mut covered = 0;
     let mut colours = Vec::new();
     for (sum, count) in ranked.into_iter().take(AUTO_MAX_COLOURS) {

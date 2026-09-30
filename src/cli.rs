@@ -24,6 +24,9 @@ Usage:
   codex-img sheet <input>... -o sheet.png
                               Lay images out in one labelled grid to review a batch;
                               see `codex-img sheet --help`
+  codex-img batch <spec.json> [key or folder...]
+                              Generate the missing images of a JSON asset spec, then
+                              convert them all; see `codex-img batch --help`
 
 Options:
   -o, --output <path>       Output file or directory (default: current directory)
@@ -106,17 +109,19 @@ pub enum Command {
     ConvertHelp,
     Sheet(crate::sheet::SheetOptions),
     SheetHelp,
+    Batch(crate::batch::BatchOptions),
+    BatchHelp,
     Run(Options),
 }
 
-fn one_of(name: &str, value: Option<String>, allowed: &[&str]) -> Result<Option<String>> {
+pub fn one_of(name: &str, value: Option<String>, allowed: &[&str]) -> Result<Option<String>> {
     match value {
         Some(v) if !allowed.contains(&v.as_str()) => Err(Error::usage(format!("--{name} must be one of: {}", allowed.join(", ")))),
         other => Ok(other),
     }
 }
 
-fn is_size(value: &str) -> bool {
+pub fn is_size(value: &str) -> bool {
     let valid = |p: &str| (2..=5).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()) && !p.starts_with('0');
     value == "auto" || value.split_once('x').is_some_and(|(w, h)| valid(w) && valid(h))
 }
@@ -131,6 +136,9 @@ pub fn parse(args: &[String]) -> Result<Command> {
     }
     if args.first().is_some_and(|a| a == "sheet") {
         return Ok(crate::sheet::parse(&args[1..])?.map_or(Command::SheetHelp, Command::Sheet));
+    }
+    if args.first().is_some_and(|a| a == "batch") {
+        return Ok(crate::batch::parse(&args[1..])?.map_or(Command::BatchHelp, Command::Batch));
     }
     let mut values: Vec<(&'static str, String)> = Vec::new();
     let mut flags: Vec<&'static str> = Vec::new();
@@ -601,6 +609,8 @@ mod tests {
         assert_eq!(parse(&args(&["convert", "-h"])).unwrap(), Command::ConvertHelp);
         assert!(matches!(parse(&args(&["sheet", "a.png", "-o", "s.png"])).unwrap(), Command::Sheet(_)));
         assert_eq!(run(&["sheet music on a piano"]).prompt, "sheet music on a piano");
+        assert!(matches!(parse(&args(&["batch", "art/assets.json"])).unwrap(), Command::Batch(_)));
+        assert_eq!(parse(&args(&["batch", "-h"])).unwrap(), Command::BatchHelp);
         assert_eq!(parse(&args(&["-h"])).unwrap(), Command::Help);
         assert_eq!(parse(&args(&["--version"])).unwrap(), Command::Version);
     }
