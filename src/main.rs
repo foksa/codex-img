@@ -1,5 +1,6 @@
 mod auth;
 mod backend;
+mod batch;
 mod cli;
 mod convert;
 mod error;
@@ -49,6 +50,11 @@ fn run(args: &[String]) -> i32 {
             Ok(0)
         }
         Command::Sheet(options) => sheet::run(&options),
+        Command::BatchHelp => {
+            println!("{}", batch::help());
+            Ok(0)
+        }
+        Command::Batch(options) => batch::run(&options),
         Command::Run(options) => generate(options),
     };
     result.unwrap_or_else(|error| {
