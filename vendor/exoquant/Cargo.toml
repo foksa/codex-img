@@ -1,0 +1,16 @@
+[package]
+name = "exoquant"
+version = "0.2.0"
+authors = ["Dennis Ranke <dennis.ranke@gmail.com>"]
+description = "Very high quality image quantization"
+keywords = ["quantization", "palette"]
+license = "MIT"
+repository = "https://github.com/exoticorn/exoquant-rs"
+documentation = "https://exoticorn.github.io/exoquant-rs/exoquant/"
+readme = "README.md"
+
+[features]
+random-sample = ['rand']
+
+[dependencies]
+rand = { version = "0.3.14", optional = true }

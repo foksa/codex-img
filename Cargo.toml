@@ -23,3 +23,7 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# exoquant with a deterministic histogram; see vendor/exoquant/VENDORED.md.
+[patch.crates-io]
+exoquant = { path = "vendor/exoquant" }
