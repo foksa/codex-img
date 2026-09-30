@@ -19,6 +19,8 @@ Adapted from the imagegen skill in pi-codex-image-gen (Apache-2.0).
 - **Stylized concept:** name the style cues, material finish and rendering approach (3D, painterly, clay, flat vector) without inventing new story elements.
 - **Historical scene:** give the place and date, and keep clothing, props and setting accurate to the period.
 - **Transparent asset (sticker, sprite, cutout):** use `-b transparent`. Ask for a single isolated subject, crisp edges, generous padding, and no shadow, floor, reflection or background.
+- **Side-on game scenery (buildings, props for a low camera):** "front view at a slight angle" or "standing on a dock" gives a visible top surface, which in a pseudo-3D or side-scrolling game looks like the ground sloping up behind the object. Ask for: "seen perfectly straight on from the front at eye level, a flat front elevation with no top surfaces visible, its bottom edge a straight horizontal line, standing on nothing: no platform, no dock, no base, no ground". Boats and docks still tend to come with painted sea; remove it with `convert --key auto` (see SKILL.md).
+- **A set of assets:** append one shared style sentence to every prompt (palette, pixel size or rendering, outline, lighting). That kept 80+ sprites of one game consistent without a style reference image. Review the set with `codex-img sheet`.
 
 ## Edit
 - **Text localization:** change only the text. Keep layout, typography, spacing and hierarchy.

@@ -19,6 +19,8 @@ pub struct ConvertOptions {
     pub transform: Transform,
     pub json: bool,
     pub quiet: bool,
+    /// Replace existing output files (never the input).
+    pub force: bool,
 }
 
 pub fn help() -> &'static str {
@@ -50,14 +52,46 @@ Options:
                             fits in the box), cover (fills it, crops the centre),
                             contain (fits, pads with transparency), fill (stretches)
       --no-enlarge          Only shrink: --resize leaves smaller images at their size
+      --key <colour>        Make painted-in ground transparent (the sea under a boat,
+                            grass under a tree): pixels of this colour connected to the
+                            transparent background or the image's border. A flood
+                            fill, so matching paint enclosed by the sprite's outline
+                            survives; small islands the removed ground leaves behind
+                            (foam, spray) go too. Repeatable. Runs after --hard-alpha,
+                            before --trim. The colour is one of:
+                              auto[:tol]     the ground's own colours, sampled from
+                                             the bottom 5% of the visible content.
+                                             Only for images with painted ground:
+                                             otherwise it keys the object's base
+                              <name>         red, orange (browns too), yellow, green,
+                                             cyan, blue, purple, pink, white, gray,
+                                             black
+                              #rrggbb[:tol]  tol per channel (default 32)
+      --key-region <band>   Only key out within a band of the visible content, e.g.
+                            bottom:30% (also top, left, right). Keeps matching
+                            colours higher up safe, like sky-blue windows
+      --ground-cut[=f]      Before --key, cut off the bottom rows where at least f
+                            (default 0.4) of the visible pixels match the key: below
+                            the line where the object meets the painted ground, like
+                            a boat's waterline (the submerged part goes too)
+      --trim-density [edges:]f
+                            With --trim, also drop sparse rows at the bottom: those
+                            with fewer visible pixels than f (e.g. 0.15) of the
+                            fullest row. Leftover specks under a sprite then don't
+                            become its bottom edge. Other edges: top:0.15,
+                            bottom,left:0.15, all:0.15 (careful: a thin mast, pole or
+                            trunk is sparse too)
       --no-bleed            Keep the colour stored under fully transparent pixels.
                             By default PNG and lossless webp output gets the nearest
                             visible colour there, so filtering in game engines and
                             other tools can't pull a dark halo into the edges
+      --force               Replace existing output files (never an input). A file
+                            that already holds the same bytes is left untouched
       --json                Print one JSON object per file to stdout
       --quiet               No progress on stderr
 
-PNG output is always recompressed losslessly. Existing files are never overwritten.
+PNG output is always recompressed losslessly, and the same input and options always
+give the same bytes. Without --force, existing files are never overwritten.
 
 Examples:
   codex-img convert hero.png -o hero.webp     # lossy, quality 80
@@ -65,11 +99,13 @@ Examples:
   codex-img convert shots/*.png -f jpeg -o out/
   codex-img convert car.png --trim=4 --resize 400x -o sprites/
   codex-img convert car.png --hard-alpha --trim --resize 400x300 --no-enlarge -c 160
-  codex-img convert cockpit.png --resize 1920x1080 --fit cover"#
+  codex-img convert cockpit.png --resize 1920x1080 --fit cover
+  codex-img convert raw/*.png --trim -c 160 -o public/ --force
+  codex-img convert boat.png --hard-alpha --key auto --key-region bottom:30% --ground-cut --trim --trim-density 0.15"#
 }
 
 pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
-    let mut opts = ConvertOptions { inputs: Vec::new(), output: None, format: None, encoding: images::Encoding::default(), transform: Transform::default(), json: false, quiet: false };
+    let mut opts = ConvertOptions { inputs: Vec::new(), output: None, format: None, encoding: images::Encoding::default(), transform: Transform::default(), json: false, quiet: false, force: false };
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         if arg == "--" {
@@ -99,12 +135,17 @@ pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
             "--fit" => opts.transform.fit = Some(Fit::parse(&value()?)?),
             "--no-bleed" => opts.transform.no_bleed = true,
             "--no-enlarge" => opts.transform.no_enlarge = true,
+            "--key" => opts.transform.keys.push(transform::Key::parse(&value()?)?),
+            "--key-region" => opts.transform.key_region = Some(transform::Region::parse(&value()?)?),
+            "--ground-cut" => opts.transform.ground_cut = Some(inline.as_deref().map(transform::parse_ground_cut).transpose()?.unwrap_or(transform::GROUND_CUT)),
+            "--trim-density" => opts.transform.trim_density = Some(transform::Density::parse(&value()?)?),
             "--hard-alpha" => {
                 opts.transform.hard_alpha =
                     Some(inline.as_deref().map(transform::parse_hard_alpha).transpose()?.unwrap_or(transform::FAINT_ALPHA))
             }
             "--json" => opts.json = true,
             "--quiet" => opts.quiet = true,
+            "--force" => opts.force = true,
             "-h" | "--help" => return Ok(None),
             _ => return Err(Error::usage(format!("Unknown convert option: {arg}"))),
         }
@@ -151,7 +192,7 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
-fn read_image(path: &Path) -> Result<(Vec<u8>, Format)> {
+pub fn read_image(path: &Path) -> Result<(Vec<u8>, Format)> {
     let fail = |e: String| Error::other(format!("Unable to read {}: {e}", path.display()));
     let meta = std::fs::metadata(path).map_err(|e| fail(e.to_string()))?;
     if !meta.is_file() {
@@ -175,7 +216,10 @@ fn convert_one(input: &Path, opts: &ConvertOptions) -> Result<serde_json::Value>
     if same_file(&target, input) {
         return Err(Error::usage(format!("Output would overwrite the input {}; choose another -o.", input.display())));
     }
-    let converted = cli::save_converted(&bytes, format, &opts.encoding, &opts.transform, &target)?;
+    if !opts.force && target.exists() {
+        return Err(Error::other(format!("{} already exists; add --force to replace it.", target.display())));
+    }
+    let converted = cli::save_converted(&bytes, format, &opts.encoding, &opts.transform, &target, opts.force)?;
     let written = std::fs::metadata(&converted.path).map(|m| m.len()).unwrap_or_default();
     let size = |(w, h): (u32, u32)| format!("{w}x{h}");
     let mut info = json!({
@@ -194,6 +238,9 @@ fn convert_one(input: &Path, opts: &ConvertOptions) -> Result<serde_json::Value>
     }
     if let Some(colors) = opts.encoding.colors {
         info["colors"] = json!(colors);
+    }
+    if converted.unchanged {
+        info["unchanged"] = json!(true);
     }
     // Same key as generation's --json: the lossy quality actually applied, defaults included.
     if let Some(quality) = converted.output_quality {
@@ -215,7 +262,8 @@ pub fn run(opts: &ConvertOptions) -> i32 {
                 }
                 if !opts.quiet {
                     let (from, to) = (info["inputBytes"].as_u64().unwrap_or(0), info["bytes"].as_u64().unwrap_or(0));
-                    eprintln!("{input} -> {} ({} KB -> {} KB)", info["path"].as_str().unwrap_or_default(), from / 1024, to / 1024);
+                    let note = if info["unchanged"] == true { ", unchanged" } else { "" };
+                    eprintln!("{input} -> {} ({} KB -> {} KB{note})", info["path"].as_str().unwrap_or_default(), from / 1024, to / 1024);
                 }
             }
             Err(error) => {
@@ -324,8 +372,23 @@ mod tests {
         assert!(dir.join("in.min.png").is_file());
         assert_eq!(run(&opts), 1, "second run must not overwrite in.min.png");
 
+        // --force replaces the file, and leaves it alone when the bytes would be the same.
+        let min = dir.join("in.min.png");
+        std::fs::write(&min, b"stale").unwrap();
+        let forced = parse(&args(&[&input_str, "-c", "4", "--quiet", "--force"])).unwrap().unwrap();
+        let info = convert_one(&input, &forced).unwrap();
+        assert!(info.get("unchanged").is_none());
+        let written = std::fs::read(&min).unwrap();
+        assert_eq!(images::sniff(&written), Some(Format::Png));
+        let modified = std::fs::metadata(&min).unwrap().modified().unwrap();
+        assert_eq!(convert_one(&input, &forced).unwrap()["unchanged"], true);
+        assert_eq!(std::fs::metadata(&min).unwrap().modified().unwrap(), modified, "same bytes: not rewritten");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().ends_with(".tmp")).count(), 0);
+
         let opts = parse(&args(&[&input_str, "-o", &input_str, "--quiet"])).unwrap().unwrap();
         assert_eq!(run(&opts), 64, "refuses to overwrite the input");
+        let opts = parse(&args(&[&input_str, "-o", &input_str, "--quiet", "--force"])).unwrap().unwrap();
+        assert_eq!(run(&opts), 64, "even with --force");
         assert_eq!(std::fs::read(&input).unwrap(), png);
 
         let text = dir.join("notes.txt");
