@@ -1,4 +1,4 @@
-//! Pixel edits for `codex-img convert`: key out painted-in background, trim to the visible
+//! Pixel edits for `codex-img convert`: key out an unwanted background, trim to the visible
 //! content, resize with premultiplied alpha, and edge bleed under fully transparent pixels.
 use crate::error::{Error, Result};
 use crate::images::{Encoding, Format};
@@ -69,8 +69,8 @@ impl Resize {
 /// `--key`: which colours count as painted-in background.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
-    /// The painted-in ground's own colours, sampled from the bottom rows of the visible content
-    /// (see `sample_ground`), each matched within `tolerance` per channel.
+    /// The background's own colours, sampled along the edges of the visible content (see
+    /// `resolve_keys`), each matched within `tolerance` per channel.
     Auto { tolerance: u8 },
     /// A named colour: a range of hue, saturation and brightness.
     Named(Colour),
@@ -198,37 +198,46 @@ impl Key {
     }
 }
 
-/// Share of the visible content's height, from the bottom, that `--key auto` samples.
+/// Depth of the strip along each edge of the visible content that `--key auto` samples, as a
+/// share of the content's height (top, bottom) or width (left, right); at least 3 pixels.
 const AUTO_SAMPLE_PERCENT: u32 = 5;
 /// `--key auto` keeps the most common colours until they cover this share of the samples, so
-/// the few pixels of the object itself that reach into the band don't become keys.
+/// the few pixels of the object itself that reach into the strip don't become keys.
 const AUTO_COVERAGE_PERCENT: u64 = 95;
 const AUTO_MAX_COLOURS: usize = 64;
 
-/// Replace each `Auto` key with the colours of the painted-in ground. Below an object, the model's
-/// painted ground (sea, grass, sand, snow) fills the bottom rows of the visible content, so those
-/// rows are sampled: colours are grouped into bins of 16 levels per channel, and the most common
-/// bins become `Rgb` keys at their average colour. Nothing here can tell painted ground from the
-/// object's own base: on a sprite without ground, the bottom rows are a trunk, wheels or a pole,
-/// and those would be keyed. So `auto` is for images that do have painted ground.
-fn resolve_keys(rgba: &RgbaImage, keys: &[Key]) -> Vec<Key> {
+/// Replace each `Auto` key with the colours of the background to remove, sampled along the outer
+/// edges of the visible content: the region's edges (painted ground under a sprite is at the
+/// bottom, sky behind a building at the top and sides), or all four without a region. Colours are
+/// grouped into bins of 16 levels per channel, and the most common bins become `Rgb` keys at their
+/// average colour. Nothing here can tell that background from the object's own edge: sampled at
+/// the bottom of a sprite without painted ground, a trunk, wheels or a pole would be keyed. So
+/// `auto` is for images that do have something to remove along those edges.
+fn resolve_keys(rgba: &RgbaImage, keys: &[Key], region: Option<Region>) -> Vec<Key> {
     let mut resolved = Vec::new();
     for &key in keys {
         match key {
-            Key::Auto { tolerance } => resolved.extend(sample_ground(rgba).into_iter().map(|rgb| Key::Rgb { rgb, tolerance })),
+            Key::Auto { tolerance } => resolved.extend(sample_edges(rgba, region).into_iter().map(|rgb| Key::Rgb { rgb, tolerance })),
             other => resolved.push(other),
         }
     }
     resolved
 }
 
-fn sample_ground(rgba: &RgbaImage) -> Vec<[u8; 3]> {
+fn sample_edges(rgba: &RgbaImage, region: Option<Region>) -> Vec<[u8; 3]> {
     let Some(bounds) = visible_bounds(rgba) else { return Vec::new() };
-    let rows = (bounds.height * AUTO_SAMPLE_PERCENT).div_ceil(100).clamp(3, bounds.height);
-    let bottom = bounds.y as u32 + bounds.height;
+    let (bx, by, bw, bh) = (bounds.x as u32, bounds.y as u32, bounds.width, bounds.height);
+    let depth = |side: u32| (side * AUTO_SAMPLE_PERCENT).div_ceil(100).clamp(3, side);
+    let edges = region.map_or([true; 4], |r| r.bands.map(|percent| percent > 0));
+    let in_strip = |x: u32, y: u32| {
+        (edges[Edge::Top as usize] && y < by + depth(bh))
+            || (edges[Edge::Bottom as usize] && y >= by + bh - depth(bh))
+            || (edges[Edge::Left as usize] && x < bx + depth(bw))
+            || (edges[Edge::Right as usize] && x >= bx + bw - depth(bw))
+    };
     let mut bins: std::collections::BTreeMap<[u8; 3], ([u64; 3], u64)> = std::collections::BTreeMap::new();
-    for y in bottom - rows..bottom {
-        for x in bounds.x as u32..bounds.x as u32 + bounds.width {
+    for y in by..by + bh {
+        for x in (bx..bx + bw).filter(|&x| in_strip(x, y)) {
             let [r, g, b, a] = rgba.get_pixel(x, y).0;
             if a > FAINT_ALPHA {
                 let (sum, count) = bins.entry([r >> 4, g >> 4, b >> 4]).or_default();
@@ -275,20 +284,30 @@ impl Edge {
     }
 }
 
-/// `--key-region bottom:30%`: the band along one edge of the visible content that --key may touch.
+const EDGES: [Edge; 4] = [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right];
+
+/// `--key-region bottom:30%`, `top:40%,left:15%` or `all:20%`: bands along edges of the visible
+/// content that --key may touch, each a share of the content's height (top, bottom) or width
+/// (left, right). Indexed by `Edge`; 0 means no band on that edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Region {
-    pub edge: Edge,
-    pub percent: u8,
+    pub bands: [u8; 4],
 }
 
 impl Region {
     pub fn parse(value: &str) -> Result<Region> {
-        let invalid = || Error::usage("--key-region must be an edge and a share of the visible content, e.g. bottom:30%.");
-        let (edge, amount) = value.split_once(':').ok_or_else(invalid)?;
-        let edge = Edge::parse(edge).ok_or_else(invalid)?;
-        let percent = parse_percent(amount).ok_or_else(invalid)?;
-        Ok(Region { edge, percent })
+        let invalid = || Error::usage("--key-region must be edges with a share of the visible content, e.g. bottom:30%, top:40%,left:15% or all:20%.");
+        let mut bands = [0u8; 4];
+        for part in value.split(',') {
+            let (edge, amount) = part.split_once(':').ok_or_else(invalid)?;
+            let percent = parse_percent(amount).ok_or_else(invalid)?;
+            if edge == "all" {
+                bands = [percent; 4];
+            } else {
+                bands[Edge::parse(edge).ok_or_else(invalid)? as usize] = percent;
+            }
+        }
+        Ok(Region { bands })
     }
 }
 
@@ -320,11 +339,15 @@ impl Density {
     }
 }
 
-/// Default `--ground-cut`: rows at least 40% key colour are below the ground line.
-pub const GROUND_CUT: u8 = 40;
+pub fn parse_key_spread(value: &str) -> Result<u8> {
+    value.parse::<u8>().ok().filter(|n| (1..=128).contains(n)).ok_or_else(|| Error::usage("--key-spread must be a colour step from 1 to 128, e.g. 24."))
+}
 
-pub fn parse_ground_cut(value: &str) -> Result<u8> {
-    parse_percent(value).ok_or_else(|| Error::usage("--ground-cut must be a fraction such as 0.4 (or 40%), e.g. --ground-cut=0.4."))
+/// Default `--key-cut`: lines at least 40% key colour are background, not the object.
+pub const KEY_CUT: u8 = 40;
+
+pub fn parse_key_cut(value: &str) -> Result<u8> {
+    parse_percent(value).ok_or_else(|| Error::usage("--key-cut must be a fraction such as 0.4 (or 40%), e.g. --key-cut=0.4."))
 }
 
 /// `0.15`, `15%` -> 15. From 1 to 100.
@@ -369,9 +392,12 @@ pub struct Transform {
     /// transparent background or the image's border.
     pub keys: Vec<Key>,
     pub key_region: Option<Region>,
-    /// Before keying, cut off bottom rows where at least this percentage of the visible pixels
-    /// match the keys: below the line where the object meets the painted-in ground.
-    pub ground_cut: Option<u8>,
+    /// Before keying, cut off whole rows (or columns) from the key region's edges while at least
+    /// this percentage of their visible pixels match the keys, like the sea below a boat's waterline.
+    pub key_cut: Option<u8>,
+    /// Also remove neighbours of removed pixels whose colour is within this of theirs, step by
+    /// step: keying then follows gradients, like a sky fading from blue to gold, and stops at outlines.
+    pub key_spread: Option<u8>,
     /// Crop to the visible (alpha > FAINT_ALPHA) pixels, plus this much transparent padding on each side.
     pub trim: Option<u32>,
     pub trim_density: Option<Density>,
@@ -397,7 +423,9 @@ impl Transform {
             _ if self.no_enlarge && self.resize.is_none() => Err(Error::usage("--no-enlarge only applies with --resize.")),
             _ if self.trim_density.is_some() && self.trim.is_none() => Err(Error::usage("--trim-density only applies with --trim.")),
             _ if self.key_region.is_some() && self.keys.is_empty() => Err(Error::usage("--key-region only applies with --key.")),
-            _ if self.ground_cut.is_some() && self.keys.is_empty() => Err(Error::usage("--ground-cut only applies with --key.")),
+            _ if self.key_cut.is_some() && self.keys.is_empty() => Err(Error::usage("--key-cut only applies with --key.")),
+            _ if self.key_spread.is_some() && self.keys.is_empty() => Err(Error::usage("--key-spread only applies with --key.")),
+            _ if self.key_cut.is_some() && self.key_region.is_none() => Err(Error::usage("--key-cut needs --key-region, to say which edges to cut from.")),
             (Some(_), None) => Err(Error::usage("--fit only applies with --resize.")),
             (Some(_), Some(Resize { width: None, .. } | Resize { height: None, .. })) => {
                 Err(Error::usage("--fit needs both sides in --resize (WxH); with one side the aspect ratio decides the other."))
@@ -419,11 +447,11 @@ impl Transform {
             changed |= harden_alpha(&mut rgba, threshold);
         }
         if !self.keys.is_empty() {
-            let keys = resolve_keys(&rgba, &self.keys);
-            if let Some(percent) = self.ground_cut {
-                changed |= cut_ground(&mut rgba, &keys, self.key_region, percent);
+            let keys = resolve_keys(&rgba, &self.keys, self.key_region);
+            if let (Some(percent), Some(region)) = (self.key_cut, self.key_region) {
+                changed |= key_cut(&mut rgba, &keys, region, percent);
             }
-            changed |= key_out(&mut rgba, &keys, self.key_region);
+            changed |= key_out(&mut rgba, &keys, self.key_region, self.key_spread);
         }
         if let Some(padding) = self.trim {
             let mut rect = visible_bounds(&rgba).ok_or_else(|| Error::other("--trim: the image has no visible pixels."))?;
@@ -531,46 +559,76 @@ fn dense_bounds(rgba: &RgbaImage, rect: Rect, density: Density) -> Rect {
     Rect { x: rect.x + left as i64, y: rect.y + top as i64, width: (right - left + 1) as u32, height: (bottom - top + 1) as u32 }
 }
 
-/// The rows `--key` and `--ground-cut` may touch: all of them, or a band along one edge of the
-/// visible content that reaches out to the image's edge. As (x0, y0, x1, y1), end exclusive.
-fn key_band(bounds: Rect, (w, h): (u32, u32), region: Option<Region>) -> (u32, u32, u32, u32) {
-    let (mut x0, mut y0, mut x1, mut y1) = (0, 0, w, h);
-    if let Some(Region { edge, percent }) = region {
-        let band = |side: u32| (u64::from(side) * u64::from(percent)).div_ceil(100) as u32;
-        let (bx, by) = (bounds.x as u32, bounds.y as u32);
-        match edge {
-            Edge::Bottom => y0 = by + bounds.height - band(bounds.height),
-            Edge::Top => y1 = by + band(bounds.height),
-            Edge::Right => x0 = bx + bounds.width - band(bounds.width),
-            Edge::Left => x1 = bx + band(bounds.width),
-        }
-    }
-    (x0, y0, x1, y1)
+/// The pixels `--key` may touch: the union of the region's bands, each along one edge of the
+/// visible content and reaching out to the image's edge, or the whole image without a region.
+struct Band {
+    /// (x0, y0, x1, y1), end exclusive.
+    rects: Vec<(u32, u32, u32, u32)>,
 }
 
-/// `--ground-cut`: scanning up from the bottom of the visible content (within the key band), make
-/// each row transparent while at least `percent` of its visible pixels match `keys`. Stops at the
-/// first row that is mostly the object: where it meets the painted-in ground, like a boat's
-/// waterline. Returns whether any pixel changed.
-fn cut_ground(rgba: &mut RgbaImage, keys: &[Key], region: Option<Region>, percent: u8) -> bool {
+impl Band {
+    fn new(bounds: Rect, (w, h): (u32, u32), region: Option<Region>) -> Band {
+        let Some(region) = region else { return Band { rects: vec![(0, 0, w, h)] } };
+        let depth = |side: u32, percent: u8| (u64::from(side) * u64::from(percent)).div_ceil(100) as u32;
+        let (bx, by, bw, bh) = (bounds.x as u32, bounds.y as u32, bounds.width, bounds.height);
+        let rects = EDGES
+            .iter()
+            .filter(|&&edge| region.bands[edge as usize] > 0)
+            .map(|&edge| {
+                let percent = region.bands[edge as usize];
+                match edge {
+                    Edge::Top => (0, 0, w, by + depth(bh, percent)),
+                    Edge::Bottom => (0, by + bh - depth(bh, percent), w, h),
+                    Edge::Left => (0, 0, bx + depth(bw, percent), h),
+                    Edge::Right => (bx + bw - depth(bw, percent), 0, w, h),
+                }
+            })
+            .collect();
+        Band { rects }
+    }
+
+    fn contains(&self, x: u32, y: u32) -> bool {
+        self.rects.iter().any(|&(x0, y0, x1, y1)| (x0..x1).contains(&x) && (y0..y1).contains(&y))
+    }
+}
+
+/// `--key-cut`: from each edge of the region, inward through its band, make whole rows (top,
+/// bottom) or columns (left, right) transparent while at least `percent` of their visible pixels
+/// match `keys`. Stops at the first line that is mostly the object: below a boat's waterline, or
+/// above a building's roofline. Returns whether any pixel changed.
+fn key_cut(rgba: &mut RgbaImage, keys: &[Key], region: Region, percent: u8) -> bool {
     let Some(bounds) = visible_bounds(rgba) else { return false };
-    let (_, y0, _, _) = key_band(bounds, rgba.dimensions(), region);
-    let bottom = bounds.y as u32 + bounds.height - 1;
-    let mut cut = bottom + 1;
-    for y in (y0.max(bounds.y as u32)..=bottom).rev() {
-        let row = (0..rgba.width()).map(|x| rgba.get_pixel(x, y).0).filter(|p| p[3] > FAINT_ALPHA);
-        let (visible, keyed) = row.fold((0u32, 0u32), |(v, k), p| (v + 1, k + u32::from(keys.iter().any(|key| key.matches(p)))));
-        if visible > 0 && keyed * 100 < u32::from(percent) * visible {
-            break;
+    let (w, h) = rgba.dimensions();
+    let (bx, by, bw, bh) = (bounds.x as u32, bounds.y as u32, bounds.width, bounds.height);
+    let mut changed = false;
+    for edge in EDGES.into_iter().filter(|&edge| region.bands[edge as usize] > 0) {
+        let horizontal = matches!(edge, Edge::Top | Edge::Bottom);
+        let side = if horizontal { bh } else { bw };
+        let depth = ((u64::from(side) * u64::from(region.bands[edge as usize])).div_ceil(100) as u32).min(side);
+        // Lines from the edge inward: row or column indices.
+        let lines: Vec<u32> = match edge {
+            Edge::Top => (by..by + depth).collect(),
+            Edge::Bottom => (by + bh - depth..by + bh).rev().collect(),
+            Edge::Left => (bx..bx + depth).collect(),
+            Edge::Right => (bx + bw - depth..bx + bw).rev().collect(),
+        };
+        let pixels_of = |line: u32| -> Vec<(u32, u32)> { if horizontal { (0..w).map(|x| (x, line)).collect() } else { (0..h).map(|y| (line, y)).collect() } };
+        for line in lines {
+            let pixels = pixels_of(line);
+            let (visible, keyed) = pixels.iter().map(|&(x, y)| rgba.get_pixel(x, y).0).filter(|p| p[3] > FAINT_ALPHA).fold((0u32, 0u32), |(v, k), p| {
+                (v + 1, k + u32::from(keys.iter().any(|key| key.matches(p))))
+            });
+            if visible > 0 && keyed * 100 < u32::from(percent) * visible {
+                break;
+            }
+            for (x, y) in pixels {
+                let alpha = &mut rgba.get_pixel_mut(x, y).0[3];
+                changed |= *alpha != 0;
+                *alpha = 0;
+            }
         }
-        cut = y;
     }
-    for y in cut..=bottom {
-        for x in 0..rgba.width() {
-            rgba.get_pixel_mut(x, y).0[3] = 0;
-        }
-    }
-    cut <= bottom
+    changed
 }
 
 /// Islands of visible pixels smaller than this share (per mille) of the largest one count as
@@ -578,48 +636,55 @@ fn cut_ground(rgba: &mut RgbaImage, keys: &[Key], region: Option<Region>, percen
 const ISLAND_PER_MILLE: usize = 10;
 
 /// `--key`: make pixels matching `keys` fully transparent where they connect (4-neighbour) to the
-/// transparent background or the image's border, within `region` of the visible content. Key
+/// transparent background or the image's border, within the region's bands. Key
 /// colours enclosed by the sprite, like a blue stripe inside a hull's outline, are never reached.
 /// Then the small islands the removed ground leaves behind go too (see `clear_islands`).
 /// Returns whether any pixel changed.
-fn key_out(rgba: &mut RgbaImage, keys: &[Key], region: Option<Region>) -> bool {
+fn key_out(rgba: &mut RgbaImage, keys: &[Key], region: Option<Region>, spread: Option<u8>) -> bool {
     let Some(bounds) = visible_bounds(rgba) else { return false };
     let (w, h) = rgba.dimensions();
-    let (x0, y0, x1, y1) = key_band(bounds, (w, h), region);
+    let band = Band::new(bounds, (w, h), region);
     let index = |x: u32, y: u32| (y * w + x) as usize;
     let background = |p: [u8; 4]| p[3] <= FAINT_ALPHA;
     let mut seen = vec![false; (w * h) as usize];
     let mut removed = vec![false; (w * h) as usize];
-    let mut queue = std::collections::VecDeque::new();
-    for y in y0..y1 {
-        for x in x0..x1 {
+    // Each entry carries the colour of the removed pixel it was reached from, for --key-spread.
+    let mut queue: std::collections::VecDeque<(u32, u32, Option<[u8; 3]>)> = std::collections::VecDeque::new();
+    for y in 0..h {
+        for x in (0..w).filter(|&x| band.contains(x, y)) {
             if background(rgba.get_pixel(x, y).0) || x == 0 || y == 0 || x == w - 1 || y == h - 1 {
                 seen[index(x, y)] = true;
-                queue.push_back((x, y));
+                queue.push_back((x, y, None));
             }
         }
     }
     let mut changed = false;
-    while let Some((x, y)) = queue.pop_front() {
+    while let Some((x, y, from)) = queue.pop_front() {
         let pixel = rgba.get_pixel_mut(x, y);
-        if !background(pixel.0) {
-            if !keys.iter().any(|k| k.matches(pixel.0)) {
+        let [r, g, b, _] = pixel.0;
+        let solid = !background(pixel.0);
+        if solid {
+            let near = spread.zip(from).is_some_and(|(tolerance, f)| [r, g, b].iter().zip(f).all(|(&c, k)| c.abs_diff(k) <= tolerance));
+            if !near && !keys.iter().any(|k| k.matches(pixel.0)) {
+                // With --key-spread, a neighbour of a closer colour may still reach it later.
+                seen[index(x, y)] = spread.is_none();
                 continue;
             }
             pixel.0[3] = 0;
             removed[index(x, y)] = true;
             changed = true;
         }
+        let from = solid.then_some([r, g, b]);
         let neighbours = [(x.wrapping_sub(1), y), (x + 1, y), (x, y.wrapping_sub(1)), (x, y + 1)];
         for (nx, ny) in neighbours {
-            if (x0..x1).contains(&nx) && (y0..y1).contains(&ny) && !seen[index(nx, ny)] {
+            if nx < w && ny < h && band.contains(nx, ny) && !seen[index(nx, ny)] {
                 seen[index(nx, ny)] = true;
-                queue.push_back((nx, ny));
+                queue.push_back((nx, ny, from));
             }
         }
     }
     if changed {
-        clear_islands(rgba, &removed, (x0, y0, x1, y1));
+        clear_islands(rgba, &removed, &band);
     }
     changed
 }
@@ -629,7 +694,7 @@ fn key_out(rgba: &mut RgbaImage, keys: &[Key], region: Option<Region>) -> bool {
 /// that no key matched, like foam and spray on painted water, survive keying as such islands; they
 /// would widen the trim and float under the sprite. Detached parts of the object that never touched
 /// the removed ground are left alone.
-fn clear_islands(rgba: &mut RgbaImage, removed: &[bool], (x0, y0, x1, y1): (u32, u32, u32, u32)) {
+fn clear_islands(rgba: &mut RgbaImage, removed: &[bool], band: &Band) {
     let (w, h) = rgba.dimensions();
     let visible: Vec<bool> = rgba.pixels().map(|p| p.0[3] > FAINT_ALPHA).collect();
     let mut island = vec![u32::MAX; visible.len()];
@@ -646,7 +711,7 @@ fn clear_islands(rgba: &mut RgbaImage, removed: &[bool], (x0, y0, x1, y1): (u32,
         while let Some(&i) = pixels.get(next) {
             next += 1;
             let (x, y) = ((i as u32 % w) as i64, (i as u32 / w) as i64);
-            inside &= (x0..x1).contains(&(x as u32)) && (y0..y1).contains(&(y as u32));
+            inside &= band.contains(x as u32, y as u32);
             for (dx, dy) in [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
                 let (nx, ny) = (x + dx, y + dy);
                 if nx < 0 || ny < 0 || nx >= i64::from(w) || ny >= i64::from(h) {
@@ -946,10 +1011,12 @@ mod tests {
         // Water beside the hull, stripe inside it, foam speck, hull.
         let points = [(5, 18), (20, 14), (6, 24), (15, 12)];
         assert_eq!(alpha(&blue, boat(), &points), [0, 255, 0, 255], "the speck is an island left in removed water");
-        // auto samples the bottom rows (water) and keys the same pixels.
-        let auto = Transform { keys: vec![Key::Auto { tolerance: 32 }], ..Default::default() };
+        // auto, sampling along the bottom, keys the same pixels.
+        let bottom = Some(Region::parse("bottom:50%").unwrap());
+        let auto = Transform { keys: vec![Key::Auto { tolerance: 32 }], key_region: bottom, ..Default::default() };
         assert_eq!(alpha(&auto, boat(), &points), [0, 255, 0, 255]);
-        assert_eq!(sample_ground(&boat()), vec![[40, 90, 220]], "one foam pixel among the water isn't sampled");
+        assert_eq!(sample_edges(&boat(), bottom), vec![[40, 90, 220]], "one foam pixel among the water isn't sampled");
+        assert!(sample_edges(&boat(), None).contains(&[30, 30, 30]), "without a region all edges are sampled, the hull's top too");
 
         // Only the bottom 30% of the visible content (rows 22-27 of 8-27).
         let band = Transform { key_region: Some(Region::parse("bottom:30%").unwrap()), ..blue.clone() };
@@ -957,8 +1024,8 @@ mod tests {
 
         let trim = Transform { trim: Some(0), ..blue.clone() };
         assert_eq!(apply(trim.clone(), boat()).trim, Some(Rect { x: 10, y: 8, width: 20, height: 13 }));
-        // --ground-cut clears the rows that are mostly water (21-27) before keying.
-        let cut = Transform { ground_cut: Some(GROUND_CUT), trim: None, ..blue.clone() };
+        // --key-cut clears the rows that are mostly water (21-27) before keying.
+        let cut = Transform { key_cut: Some(KEY_CUT), key_region: bottom, trim: None, ..blue.clone() };
         assert_eq!(alpha(&cut, boat(), &[(20, 14), (15, 21), (5, 18)]), [255, 0, 0]);
         // A big detached part that never touched removed ground stays.
         let mut with_flag = boat();
@@ -969,9 +1036,78 @@ mod tests {
 
         assert!(Transform { keys: vec![Key::Named(Colour::White)], ..Default::default() }.edits());
         let no_keys = |t: Transform| t.check().unwrap_err().message;
-        assert!(no_keys(Transform { ground_cut: Some(40), ..Default::default() }).contains("--key"));
+        assert!(no_keys(Transform { key_cut: Some(40), ..Default::default() }).contains("--key"));
+        assert!(no_keys(Transform { key_cut: Some(40), ..blue.clone() }).contains("--key-region"));
         assert!(no_keys(Transform { key_region: Some(Region::parse("top:10%").unwrap()), ..Default::default() }).contains("--key"));
         assert!(no_keys(Transform { trim_density: Some(Density::parse("0.1").unwrap()), ..Default::default() }).contains("--trim"));
+    }
+
+    /// A 60x40 opaque picture: a sky gradient with a small white cloud, a red house with a dark
+    /// outline and a sky-blue window, standing on green ground that spans the whole width.
+    fn house() -> RgbaImage {
+        RgbaImage::from_fn(60, 40, |x, y| {
+            let house = (25..40).contains(&x) && (12..32).contains(&y);
+            let outline = house && (x == 25 || x == 39 || y == 12);
+            Rgba(match (x, y) {
+                _ if outline => [30, 20, 20, 255],
+                _ if house && (30..34).contains(&x) && (16..20).contains(&y) => [110, 160, 235, 255],
+                _ if house => [200, 50, 40, 255],
+                (_, 30..) => [60, 150, 50, 255],
+                _ if (10..16).contains(&x) && (5..8).contains(&y) => [245, 245, 250, 255],
+                _ => [100 + y as u8, 160, 235, 255],
+            })
+        })
+    }
+
+    #[test]
+    fn keys_out_sky_from_the_top() {
+        let sky = Transform { keys: vec![Key::Auto { tolerance: 32 }], key_region: Some(Region::parse("top:80%").unwrap()), ..Default::default() };
+        // Sky beside the house, house, window, ground (its top rows are in the band, but green
+        // was never sampled from the top).
+        let points = [(5, 20), (50, 28), (27, 20), (31, 17), (5, 35), (5, 30)];
+        assert_eq!(alpha(&sky, house(), &points), [0, 0, 255, 255, 255, 255]);
+        let trimmed = apply(Transform { trim: Some(0), ..sky.clone() }, house());
+        assert_eq!(trimmed.trim, Some(Rect { x: 0, y: 5, width: 60, height: 35 }), "the cloud is left");
+        // The cloud wasn't in the sampled strip, and it's too big to count as a speck: name it.
+        let with_white = Transform { keys: vec![Key::Auto { tolerance: 32 }, Key::Named(Colour::White)], trim: Some(0), ..sky };
+        assert_eq!(apply(with_white, house()).trim, Some(Rect { x: 0, y: 12, width: 60, height: 28 }), "down to the roof");
+    }
+
+    #[test]
+    fn key_spread_follows_a_gradient_and_stops_at_outlines() {
+        // A sky from blue (top) to gold (row 29): each row a small step, far apart overall.
+        let gradient = |y: u32| [(60 + y * 6) as u8, (140 + y * 2) as u8, (235 - y * 6) as u8];
+        let picture = RgbaImage::from_fn(60, 40, |x, y| {
+            let house = (25..40).contains(&x) && (12..32).contains(&y);
+            let outline = house && (x == 25 || x == 39 || y == 12);
+            Rgba(match (x, y) {
+                _ if outline => [30, 20, 20, 255],
+                _ if house => [200, 50, 40, 255],
+                (_, 30..) => [60, 150, 50, 255],
+                _ => { let [r, g, b] = gradient(y); [r, g, b, 255] }
+            })
+        });
+        let top = Transform { keys: vec![Key::Auto { tolerance: 16 }], key_region: Some(Region::parse("top:80%").unwrap()), ..Default::default() };
+        let points = [(5, 2), (5, 25), (27, 20), (5, 35)];
+        assert_eq!(alpha(&top, picture.clone(), &points), [0, 255, 255, 255], "only the sampled blue goes");
+        let spread = Transform { key_spread: Some(12), ..top };
+        assert_eq!(alpha(&spread, picture, &points), [0, 0, 255, 255], "the gold end goes too; house and ground stay");
+        assert_eq!(parse_key_spread("24").unwrap(), 24);
+        assert!(parse_key_spread("0").is_err() && parse_key_spread("200").is_err());
+    }
+
+    #[test]
+    fn key_cut_works_from_any_edge() {
+        // A wide building: rows of sky above the roof go in whole lines from the top.
+        let wide = RgbaImage::from_fn(60, 40, |x, y| Rgba(if (5..55).contains(&x) && y >= 12 { [200, 50, 40, 255] } else { [100, 160, 235, 255] }));
+        let cut = Transform { keys: vec![Key::Named(Colour::Blue)], key_region: Some(Region::parse("top:50%").unwrap()), key_cut: Some(KEY_CUT), no_bleed: true, ..Default::default() };
+        let out = apply(cut.clone(), wide.clone()).image;
+        assert!((0..60).all(|x| out.get_pixel(x, 11).0[3] == 0), "a sky row above the roof");
+        assert_eq!((out.get_pixel(30, 12).0[3], out.get_pixel(2, 12).0[3]), (255, 0), "the roof row stays; sky beside it is keyed");
+        // From the left, columns of sky go until the wall.
+        let left = Transform { key_region: Some(Region::parse("left:20%").unwrap()), ..cut };
+        let out = apply(left, wide).image;
+        assert_eq!((out.get_pixel(4, 30).0[3], out.get_pixel(5, 30).0[3]), (0, 255));
     }
 
     #[test]
@@ -1007,9 +1143,11 @@ mod tests {
         assert!(is(Colour::Green, [40, 160, 40]) && is(Colour::Orange, [120, 70, 30]), "browns are orange");
         assert!(is(Colour::Red, [200, 20, 40]) && is(Colour::Red, [200, 30, 20]), "red wraps around 0 degrees");
 
-        assert_eq!(Region::parse("bottom:30%").unwrap(), Region { edge: Edge::Bottom, percent: 30 });
-        assert_eq!(Region::parse("left:0.25").unwrap(), Region { edge: Edge::Left, percent: 25 });
-        for bad in ["bottom", "middle:30%", "bottom:0", "bottom:150%"] {
+        assert_eq!(Region::parse("bottom:30%").unwrap(), Region { bands: [0, 30, 0, 0] });
+        assert_eq!(Region::parse("left:0.25").unwrap(), Region { bands: [0, 0, 25, 0] });
+        assert_eq!(Region::parse("top:40%,left:15%,right:15%").unwrap(), Region { bands: [40, 0, 15, 15] });
+        assert_eq!(Region::parse("all:20%").unwrap(), Region { bands: [20; 4] });
+        for bad in ["bottom", "middle:30%", "bottom:0", "bottom:150%", "top:40%,"] {
             assert!(Region::parse(bad).is_err(), "{bad}");
         }
         assert_eq!(Density::parse("0.15").unwrap(), Density { edges: [false, true, false, false], percent: 15 });
@@ -1018,7 +1156,7 @@ mod tests {
         for bad in ["0", "1.5", "side:0.1", "bottom:"] {
             assert!(Density::parse(bad).is_err(), "{bad}");
         }
-        assert_eq!((parse_ground_cut("0.6").unwrap(), parse_ground_cut("60%").unwrap()), (60, 60));
+        assert_eq!((parse_key_cut("0.6").unwrap(), parse_key_cut("60%").unwrap()), (60, 60));
     }
 
     #[test]

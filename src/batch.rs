@@ -71,7 +71,7 @@ Asset fields (in an asset, null or false turns a default off):
   publish                   false: generate only, e.g. a reference for other assets
   format                    png (default), jpeg or webp
   colors, dither, output_quality, lossless, trim, hard_alpha, resize, fit,
-  no_enlarge, no_bleed, key, key_region, ground_cut, trim_density
+  no_enlarge, no_bleed, key, key_region, key_cut, key_spread, trim_density
                             As the convert options (`codex-img convert --help`):
                             true for a flag, a number or string for a value, a
                             list for several keys
@@ -163,9 +163,9 @@ impl Spec {
 }
 
 const TOP_FIELDS: [&str; 5] = ["raw_dir", "out_dir", "style", "defaults", "assets"];
-const ASSET_FIELDS: [&str; 23] = [
+const ASSET_FIELDS: [&str; 24] = [
     "prompt", "size", "quality", "background", "reference", "images", "publish", "format", "colors", "dither", "output_quality", "lossless", "trim",
-    "hard_alpha", "resize", "max", "fit", "no_enlarge", "no_bleed", "key", "key_region", "ground_cut", "trim_density",
+    "hard_alpha", "resize", "max", "fit", "no_enlarge", "no_bleed", "key", "key_region", "key_cut", "key_spread", "trim_density",
 ];
 
 fn load_spec(path: &Path) -> Result<Spec> {
@@ -355,7 +355,8 @@ fn parse_asset(key: &str, fields: &Fields, style: Option<&str>, keys: &[&str], b
         hard_alpha: fields.flag_or_text("hard_alpha")?.map(|v| v.map_or(Ok(transform::FAINT_ALPHA), |t| transform::parse_hard_alpha(&t))).transpose()?,
         keys: fields.strings("key")?.iter().map(|k| Key::parse(k)).collect::<Result<_>>()?,
         key_region: fields.string("key_region")?.map(|v| Region::parse(&v)).transpose()?,
-        ground_cut: fields.flag_or_text("ground_cut")?.map(|v| v.map_or(Ok(transform::GROUND_CUT), |t| transform::parse_ground_cut(&t))).transpose()?,
+        key_spread: fields.text("key_spread")?.map(|v| transform::parse_key_spread(&v)).transpose()?,
+        key_cut: fields.flag_or_text("key_cut")?.map(|v| v.map_or(Ok(transform::KEY_CUT), |t| transform::parse_key_cut(&t))).transpose()?,
         trim: fields.flag_or_text("trim")?.map(|v| v.map_or(Ok(0), |t| transform::parse_trim_padding(&t))).transpose()?,
         trim_density: fields.text("trim_density")?.map(|v| Density::parse(&v)).transpose()?,
         resize,
@@ -745,7 +746,7 @@ mod tests {
             "assets": {
                 "trees/oak": {"prompt": "An oak.", "size": "1536x1024", "max": [420, 380]},
                 "sky": {"prompt": "A sky.", "background": "opaque", "format": "webp", "colors": null, "hard_alpha": false, "trim": false, "output_quality": 85},
-                "boat": {"prompt": "A boat.", "key": "auto", "key_region": "bottom:30%", "ground_cut": true, "trim_density": 0.15, "trim": 4},
+                "boat": {"prompt": "A boat.", "key": "auto", "key_region": "bottom:30%", "key_cut": true, "trim_density": 0.15, "trim": 4},
                 "mill/full": {"prompt": "A windmill.", "publish": false},
                 "mill/sails": {"prompt": "Only the sails.", "reference": "mill/full", "images": ["refs/style.png"]}
             }
@@ -757,7 +758,7 @@ mod tests {
         assert_eq!((oak.transform.resize, oak.transform.no_enlarge), (Some(Resize { width: Some(420), height: Some(380) }), true));
         assert_eq!((sky.background.as_deref(), sky.format, sky.encoding.colors, sky.encoding.quality), (Some("opaque"), Format::Webp, None, Some(85)));
         assert_eq!((sky.transform.hard_alpha, sky.transform.trim), (None, None));
-        assert_eq!((boat.transform.keys.len(), boat.transform.ground_cut, boat.transform.trim, boat.transform.trim_density.map(|d| d.percent)), (1, Some(40), Some(4), Some(15)));
+        assert_eq!((boat.transform.keys.len(), boat.transform.key_cut, boat.transform.trim, boat.transform.trim_density.map(|d| d.percent)), (1, Some(40), Some(4), Some(15)));
         assert!(!full.publish && sails.publish);
         assert_eq!((sails.references.clone(), sails.images.clone()), (vec![3], vec![PathBuf::from("/project/art/refs/style.png")]));
         assert_eq!(s.raw_path(oak), PathBuf::from("/project/art/raw/trees/oak.png"));

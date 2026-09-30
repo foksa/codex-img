@@ -48,11 +48,13 @@ Options:
       --trim[=pad]          Crop transparent borders to the visible pixels
       --hard-alpha[=n]      Every pixel fully solid (alpha above n, default 16) or
                             fully transparent; for pixel art
-      --key <colour>        Remove painted-in ground connected to the transparent
-                            area: auto (sampled from the bottom rows), a colour name
-                            (blue, white, green, ...) or #rrggbb[:tol]; repeatable.
-                            --key-region bottom:30% limits it to a band;
-                            --ground-cut[=f] first cuts rows that are mostly ground
+      --key <colour>        Remove an unwanted background (painted ground, sky)
+                            connected to the transparent area or the border: auto
+                            (sampled along the edges), a colour name (blue, white,
+                            green, ...) or #rrggbb[:tol]; repeatable. --key-region
+                            bottom:30% (or top:40%,left:15%) limits it to bands;
+                            --key-cut[=f] first cuts lines that are mostly key colour;
+                            --key-spread <step> follows gradients from what's removed
       --trim-density <f>    With --trim, also drop sparse bottom rows (under f of the
                             fullest row), so leftover specks don't make sprites float
       --resize <size>       WxH, Wx or xH, after --trim; --fit inside (default) |
@@ -190,14 +192,15 @@ pub fn parse(args: &[String]) -> Result<Command> {
             "--key" => "key",
             "--key-region" => "key-region",
             "--trim-density" => "trim-density",
-            "--ground-cut" => "ground-cut",
+            "--key-cut" => "key-cut",
+            "--key-spread" => "key-spread",
             "-h" | "--help" => "help",
             "-v" | "--version" => "version",
             _ => return Err(Error::usage(format!("Unknown option: {arg}"))),
         };
         // --trim and --hard-alpha take values only inline (--trim=8): a bare word after them is the prompt.
         if matches!(key, "json" | "quiet" | "via-responses" | "dither" | "lossless" | "no-bleed" | "no-enlarge" | "help" | "version")
-            || (matches!(key, "trim" | "hard-alpha" | "ground-cut") && inline.is_none())
+            || (matches!(key, "trim" | "hard-alpha" | "key-cut") && inline.is_none())
         {
             flags.push(key);
         } else {
@@ -246,9 +249,10 @@ pub fn parse(args: &[String]) -> Result<Command> {
         },
         keys: values.iter().filter(|(k, _)| *k == "key").map(|(_, v)| transform::Key::parse(v)).collect::<Result<_>>()?,
         key_region: last("key-region").map(|v| transform::Region::parse(&v)).transpose()?,
-        ground_cut: match last("ground-cut") {
-            Some(share) => Some(transform::parse_ground_cut(&share)?),
-            None => flags.contains(&"ground-cut").then_some(transform::GROUND_CUT),
+        key_spread: last("key-spread").map(|v| transform::parse_key_spread(&v)).transpose()?,
+        key_cut: match last("key-cut") {
+            Some(share) => Some(transform::parse_key_cut(&share)?),
+            None => flags.contains(&"key-cut").then_some(transform::KEY_CUT),
         },
         trim: match last("trim") {
             Some(padding) => Some(transform::parse_trim_padding(&padding)?),
@@ -592,15 +596,16 @@ mod tests {
         assert_eq!(run(&["--hard-alpha", "x"]).transform.hard_alpha, Some(16));
         assert_eq!(run(&["--hard-alpha=100", "x"]).transform.hard_alpha, Some(100));
         assert!(run(&["--resize", "400x", "--no-enlarge", "x"]).transform.no_enlarge);
-        let t = run(&["--key", "auto", "--key=#102030:8", "--key-region", "bottom:30%", "--trim", "--trim-density", "0.15", "--ground-cut", "x"]).transform;
+        let t = run(&["--key", "auto", "--key=#102030:8", "--key-region", "bottom:30%", "--trim", "--trim-density", "0.15", "--key-cut", "x"]).transform;
         assert_eq!(t.keys, vec![transform::Key::Auto { tolerance: 32 }, transform::Key::Rgb { rgb: [16, 32, 48], tolerance: 8 }]);
-        assert_eq!((t.key_region.map(|r| r.percent), t.trim_density.map(|d| d.percent)), (Some(30), Some(15)));
+        assert_eq!((t.key_region.map(|r| r.bands[1]), t.trim_density.map(|d| d.percent)), (Some(30), Some(15)));
         assert!(usage_error(&["--trim-density", "0.15", "x"]).contains("--trim"));
         assert!(usage_error(&["--key-region", "bottom:30%", "x"]).contains("--key"));
         assert!(usage_error(&["--key", "sea", "x"]).contains("--key"));
-        assert_eq!(t.ground_cut, Some(40));
-        assert_eq!(run(&["--key", "blue", "--ground-cut=0.6", "x"]).transform.ground_cut, Some(60));
-        assert!(usage_error(&["--ground-cut", "x"]).contains("--key"));
+        assert_eq!(t.key_cut, Some(40));
+        assert_eq!(run(&["--key", "blue", "--key-region", "top:40%", "--key-cut=0.6", "x"]).transform.key_cut, Some(60));
+        assert!(usage_error(&["--key-cut", "x"]).contains("--key"));
+        assert!(usage_error(&["--key", "auto", "--key-cut", "x"]).contains("--key-region"));
         assert!(usage_error(&["--no-enlarge", "x"]).contains("--resize"));
         let o = run(&["--via-responses", "-m", "gpt-6-sol", "x"]);
         assert!(o.via_responses);
