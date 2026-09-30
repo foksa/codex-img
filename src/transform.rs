@@ -446,12 +446,15 @@ impl Transform {
         if let Some(threshold) = self.hard_alpha {
             changed |= harden_alpha(&mut rgba, threshold);
         }
-        if !self.keys.is_empty() {
+        if let Some(bounds) = visible_bounds(&rgba).filter(|_| !self.keys.is_empty()) {
+            // The region is measured once, on the content as it came in: --key-cut shrinks the
+            // visible bounds, and a band recomputed after it would reach past the requested one.
             let keys = resolve_keys(&rgba, &self.keys, self.key_region);
+            let band = Band::new(bounds, rgba.dimensions(), self.key_region);
             if let (Some(percent), Some(region)) = (self.key_cut, self.key_region) {
-                changed |= key_cut(&mut rgba, &keys, region, percent);
+                changed |= key_cut(&mut rgba, &keys, region, bounds, percent);
             }
-            changed |= key_out(&mut rgba, &keys, self.key_region, self.key_spread);
+            changed |= key_out(&mut rgba, &keys, &band, self.key_spread);
         }
         if let Some(padding) = self.trim {
             let mut rect = visible_bounds(&rgba).ok_or_else(|| Error::other("--trim: the image has no visible pixels."))?;
@@ -596,8 +599,7 @@ impl Band {
 /// bottom) or columns (left, right) transparent while at least `percent` of their visible pixels
 /// match `keys`. Stops at the first line that is mostly the object: below a boat's waterline, or
 /// above a building's roofline. Returns whether any pixel changed.
-fn key_cut(rgba: &mut RgbaImage, keys: &[Key], region: Region, percent: u8) -> bool {
-    let Some(bounds) = visible_bounds(rgba) else { return false };
+fn key_cut(rgba: &mut RgbaImage, keys: &[Key], region: Region, bounds: Rect, percent: u8) -> bool {
     let (w, h) = rgba.dimensions();
     let (bx, by, bw, bh) = (bounds.x as u32, bounds.y as u32, bounds.width, bounds.height);
     let mut changed = false;
@@ -640,10 +642,8 @@ const ISLAND_PER_MILLE: usize = 10;
 /// colours enclosed by the sprite, like a blue stripe inside a hull's outline, are never reached.
 /// Then the small islands the removed ground leaves behind go too (see `clear_islands`).
 /// Returns whether any pixel changed.
-fn key_out(rgba: &mut RgbaImage, keys: &[Key], region: Option<Region>, spread: Option<u8>) -> bool {
-    let Some(bounds) = visible_bounds(rgba) else { return false };
+fn key_out(rgba: &mut RgbaImage, keys: &[Key], band: &Band, spread: Option<u8>) -> bool {
     let (w, h) = rgba.dimensions();
-    let band = Band::new(bounds, (w, h), region);
     let index = |x: u32, y: u32| (y * w + x) as usize;
     let background = |p: [u8; 4]| p[3] <= FAINT_ALPHA;
     let mut seen = vec![false; (w * h) as usize];
@@ -684,7 +684,7 @@ fn key_out(rgba: &mut RgbaImage, keys: &[Key], region: Option<Region>, spread: O
         }
     }
     if changed {
-        clear_islands(rgba, &removed, &band);
+        clear_islands(rgba, &removed, band);
     }
     changed
 }
@@ -1094,6 +1094,19 @@ mod tests {
         assert_eq!(alpha(&spread, picture, &points), [0, 0, 255, 255], "the gold end goes too; house and ground stay");
         assert_eq!(parse_key_spread("24").unwrap(), 24);
         assert!(parse_key_spread("0").is_err() && parse_key_spread("200").is_err());
+    }
+
+    #[test]
+    fn key_cut_keeps_the_region_it_was_given() {
+        // 20x100: blue rows 0-39, red below, and one blue pixel on the border at row 60. top:50%
+        // ends at row 49 of the content; cutting the blue rows must not move that band down.
+        let picture = RgbaImage::from_fn(20, 100, |x, y| Rgba(if y < 40 || (x, y) == (0, 60) { [40, 90, 220, 255] } else { [200, 40, 40, 255] }));
+        let top = Transform { keys: vec![Key::Named(Colour::Blue)], key_region: Some(Region::parse("top:50%").unwrap()), no_bleed: true, ..Default::default() };
+        let cut = Transform { key_cut: Some(KEY_CUT), ..top.clone() };
+        for t in [top, cut] {
+            let out = apply(t.clone(), picture.clone()).image;
+            assert_eq!((out.get_pixel(5, 20).0[3], out.get_pixel(0, 60).0[3]), (0, 255), "{t:?}");
+        }
     }
 
     #[test]
