@@ -243,7 +243,7 @@ fn compose(sprites: &[(String, RgbaImage)], opts: &SheetOptions) -> Result<(Rgba
             }
         }
         imageops::overlay(&mut sheet, &scaled, i64::from(x), i64::from(y));
-        draw_text(&mut sheet, &fit_label(label, (cell - 2 * MARGIN) / (GLYPH_ADVANCE * scale)), x0 + MARGIN, y0 + cell + scale, scale, ink);
+        draw_text(&mut sheet, &fit_label(label, (cell - 2 * MARGIN) / (GLYPH_ADVANCE * scale), opts.labels), x0 + MARGIN, y0 + cell + scale, scale, ink);
     }
     Ok((sheet, cols, rows))
 }
@@ -265,15 +265,18 @@ fn shade(bg: [u8; 3]) -> Rgba<u8> {
     Rgba([r, g, b, 255])
 }
 
-/// Shorten `label` to `max` characters, marking the cut with `~`.
-fn fit_label(label: &str, max: u32) -> String {
-    let max = max as usize;
-    if label.chars().count() <= max {
+/// Shorten `label` to `max` characters, marking the cut with `~`. A name keeps its start; a path
+/// keeps its end, where the file name is.
+fn fit_label(label: &str, max: u32, labels: Labels) -> String {
+    let (max, count) = (max as usize, label.chars().count());
+    if count <= max {
         return label.to_string();
     }
-    let mut short: String = label.chars().take(max.saturating_sub(1)).collect();
-    short.push('~');
-    short
+    let keep = max.saturating_sub(1);
+    match labels {
+        Labels::Path => std::iter::once('~').chain(label.chars().skip(count - keep)).collect(),
+        _ => label.chars().take(keep).chain(std::iter::once('~')).collect(),
+    }
 }
 
 const GLYPH_HEIGHT: u32 = 8;
@@ -470,8 +473,9 @@ mod tests {
 
     #[test]
     fn fits_labels_and_picks_ink() {
-        assert_eq!(fit_label("fishing-boat.png", 20), "fishing-boat.png");
-        assert_eq!(fit_label("fishing-boat.png", 8), "fishing~");
+        assert_eq!(fit_label("fishing-boat.png", 20, Labels::Name), "fishing-boat.png");
+        assert_eq!(fit_label("fishing-boat.png", 8, Labels::Name), "fishing~");
+        assert_eq!(fit_label("art/raw/harbor/boat.png", 12, Labels::Path), "~or/boat.png");
         assert_eq!(contrasting([250, 250, 250]).0, [0, 0, 0, 255]);
         assert_eq!(contrasting([20, 20, 40]).0, [255, 255, 255, 255]);
         assert_eq!(label_for("art/raw/boat.png", Labels::Name), "boat.png");
