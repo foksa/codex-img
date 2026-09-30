@@ -69,7 +69,7 @@ pub fn decode_image_data(base64_data: &str) -> Result<(Vec<u8>, Format)> {
     }
     let value = base64_data.trim();
     let invalid = || Error::other("Codex returned invalid base64 image data.");
-    if value.is_empty() || value.len() % 4 != 0 {
+    if value.is_empty() || !value.len().is_multiple_of(4) {
         return Err(invalid());
     }
     let bytes = base64::engine::general_purpose::STANDARD.decode(value).map_err(|_| invalid())?;

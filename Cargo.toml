@@ -5,7 +5,7 @@ edition = "2021"
 description = "Generate and edit images with your ChatGPT/Codex subscription, calling the Codex image endpoint directly."
 license = "Apache-2.0"
 repository = "https://github.com/foksa/codex-img"
-rust-version = "1.82"
+rust-version = "1.88"
 
 [dependencies]
 base64 = "0.22"
