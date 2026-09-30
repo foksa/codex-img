@@ -19,7 +19,7 @@ codex-img convert <file>... [-o <path>] [-f fmt] [-c n] [--trim] [--resize WxH] 
 
 | Option | Values |
 |---|---|
-| `-o` | File (`hero.png`) or directory (`assets/`). Format is inferred from the extension. Existing files are never overwritten, so choose a new name for each iteration. |
+| `-o` | File (`hero.png`) or directory (`assets/`). Format is inferred from the extension. Existing files are never overwritten, so choose a new name for each iteration. A taken name fails at once (exit `1`), before any quota is spent. |
 | `-i` | PNG, JPEG or WebP input, repeatable up to 5 |
 | `-s` | `1536x1024` (landscape), `1024x1536` (portrait), `auto`; a hint for the shape, not exact pixels (`1536x1024` can come back as 1672x941). For exact pixels, add `--resize WxH --fit cover` |
 | `-b` | `transparent` for real alpha (PNG only), `opaque`, `auto` |

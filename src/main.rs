@@ -97,6 +97,7 @@ fn generate(mut opts: Options) -> Result<i32> {
     let format = opts.format.unwrap_or(Format::Png);
     // parse() couldn't check against the default format; do it before spending quota.
     opts.encoding.check(Some(format))?;
+    cli::check_output(opts.output.as_deref(), format, opts.count, &opts.transform)?;
     let quiet = opts.quiet;
     let log = move |message: &str| {
         if !quiet {

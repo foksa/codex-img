@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location("codex_img", os.path.join(HERE, "..", "skills", "codex-img", "scripts", "codex_img.py"))
@@ -90,9 +91,12 @@ class Test(unittest.TestCase):
         self.assertEqual(body, {"prompt": "a fox", "model": "gpt-image-2", "size": "1536x1024"})
         with open(out, "rb") as f:
             self.assertEqual(f.read(), PNG)
-        # never overwrites
+        # never overwrites, and finds out before spending a request
         Server.responses = [self.ok()]
-        self.assertEqual(self.run_cli("a fox", "-o", out, "--quiet")[0], 1)
+        code, _, stderr = self.run_cli("a fox", "-o", out, "--quiet")
+        self.assertEqual(code, 1)
+        self.assertIn("already exists", stderr)
+        self.assertEqual(len(Server.requests), 1)
 
     def test_edit_and_count(self):
         ref = os.path.join(self.dir, "ref.png")
@@ -119,6 +123,36 @@ class Test(unittest.TestCase):
         for args in (["convert", "a.png", "-o", "a.webp"], ["sheet", "a.png", "-o", "s.png"], ["batch", "art.json"], ["tile", "sky.png", "-o", "t.png"], ["x", "-f", "jpeg"], ["x", "-c", "64"], ["x", "--output-quality", "80"], ["x", "--via-responses"], ["x", "--trim=4"], ["x", "--resize", "400x"], ["x", "-o", "a.jpg"], ["x", "-s", "big"], []):
             self.assertEqual(self.run_cli(*args)[0], 64, args)
         self.assertEqual(Server.requests, [])
+
+    def test_failed_write_leaves_no_file(self):
+        real_open = open
+
+        class Full:
+            def __init__(self, f):
+                self.f = f
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.f.close()
+
+            def write(self, data):
+                self.f.write(data[:3])
+                raise OSError(28, "No space left on device")
+
+        def full_disk(path, mode="r", *args, **kwargs):
+            f = real_open(path, mode, *args, **kwargs)
+            return Full(f) if "x" in mode else f
+
+        folder = os.path.join(self.dir, "out")
+        with unittest.mock.patch("builtins.open", full_disk):
+            with self.assertRaises(ci.Fail) as failed:
+                ci.save(PNG, os.path.join(folder, "a.png"))
+        self.assertIn("No space left", str(failed.exception))
+        self.assertEqual(os.listdir(folder), [])
+        ci.save(PNG, os.path.join(folder, "a.png"))
+        self.assertEqual(os.listdir(folder), ["a.png"])
 
     def test_auth(self):
         code, stdout, _ = self.run_cli("status", "--json")

@@ -60,7 +60,7 @@ codex-img status --json                                     # login check, uses 
 
 | Option | |
 |---|---|
-| `-o, --output` | File or directory. A trailing `/` or an existing directory gets generated names. With `-n`, files get `-1`, `-2`, … suffixes. Existing files are never overwritten. |
+| `-o, --output` | File or directory. A trailing `/` or an existing directory gets generated names. With `-n`, files get `-1`, `-2`, … suffixes. Existing files are never overwritten: a taken name is refused before any quota is spent. |
 | `-i, --image` | Reference image to edit or compose (PNG/JPEG/WebP, repeatable, max 5) |
 | `-f, --format` | `png` \| `jpeg` \| `webp`. Defaults to the `-o` extension, then `png`. The endpoint returns PNG and the rest is converted locally: `jpeg` with transparency flattened onto white; `webp` lossy (libwebp), keeping transparency |
 | `--output-quality` | 1–100 for `jpeg` (default 90) and lossy `webp` (default 80). Separate from `-q`, which is only a hint to the backend |

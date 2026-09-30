@@ -9,6 +9,7 @@ Reads the ChatGPT login that `codex login` keeps in $CODEX_HOME/auth.json and
 never refreshes it (refresh tokens rotate; refreshing here could log codex out).
 """
 import base64
+import contextlib
 import json
 import os
 import random
@@ -411,13 +412,52 @@ def output_path(output, ext, image_id, index, count):
     return f"{stem}-{index + 1}{current or '.' + ext}"
 
 
-def save(data, path):
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+def check_output(output, count):
+    """Before any quota is spent: the files -o names must be free and their folder creatable.
+    Names made up in a folder are unique. save() still refuses to overwrite."""
+    if not output or output.endswith("/") or os.path.isdir(os.path.abspath(output)):
+        return
+    for index in range(count):
+        target = output_path(output, "png", "", index, count)
+        if os.path.lexists(target):
+            raise Fail(OTHER, f"{target} already exists; codex-img never overwrites it. Choose another -o or delete it.")
+        try:
+            os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+        except OSError as e:
+            raise Fail(OTHER, f"Could not create {os.path.dirname(target)}: {e.strerror or e}")
+
+
+def write_file(path, data):
+    """Create path (never replacing a file) and write data, removing it again if the write fails."""
     try:
-        with open(path, "xb") as f:  # never overwrite
-            f.write(data)
+        f = open(path, "xb")
     except OSError as e:
         raise Fail(OTHER, f"Could not create {path}: {e.strerror or e}")
+    try:
+        with f:
+            f.write(data)
+    except OSError as e:
+        with contextlib.suppress(OSError):
+            os.remove(path)
+        raise Fail(OTHER, f"Could not write {path}: {e.strerror or e}")
+
+
+def save(data, path):
+    """Write a new file that only appears once complete: written to a temporary file first, then
+    hard-linked into place, which (unlike a rename) never replaces an existing file."""
+    folder = os.path.dirname(path) or "."
+    os.makedirs(folder, exist_ok=True)
+    temp = os.path.join(folder, f".{os.path.basename(path)}.{uuid.uuid4().hex[:8]}.tmp")
+    write_file(temp, data)
+    try:
+        os.link(temp, path)
+    except FileExistsError as e:
+        raise Fail(OTHER, f"Could not create {path}: {e.strerror or e}")
+    except OSError:  # a filesystem without hard links
+        write_file(path, data)
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(temp)
 
 
 def run_one(opts, input_urls, creds, index, lock, log):
@@ -473,6 +513,7 @@ def main(args):
             opts["prompt"] = sys.stdin.read().strip()
         if not opts["prompt"].strip() or len(opts["prompt"]) > MAX_PROMPT_CHARS:
             raise Fail(USAGE, "Image prompt must contain 1 to 32,000 characters.")
+        check_output(opts["output"], opts["count"])
         log = (lambda m: None) if opts["quiet"] else (lambda m: print(m, file=sys.stderr, flush=True))
         creds = load_credentials()
         input_urls = load_input_images(opts["images"])

@@ -315,6 +315,32 @@ pub fn output_path(output: Option<&str>, format: Format, id: &str, index: usize,
     path.with_file_name(format!("{stem}-{}.{}", index + 1, current.as_deref().unwrap_or(ext)))
 }
 
+/// Checked before any quota is spent, so a generated image isn't thrown away: every file `-o`
+/// names (with `-N` suffixes, and the kept original when `transform` edits pixels) must be free,
+/// and its folder creatable. Names made up in a folder are unique. `save_image` still refuses to
+/// overwrite a file that appears while the request runs.
+pub fn check_output(output: Option<&str>, format: Format, count: usize, transform: &transform::Transform) -> Result<()> {
+    let Some(output) = output else { return Ok(()) };
+    if output.ends_with('/') || std::env::current_dir().unwrap_or_default().join(output).is_dir() {
+        return Ok(());
+    }
+    for index in 0..count {
+        let target = output_path(Some(output), format, "", index, count, 0);
+        let mut targets = vec![target.clone()];
+        if transform.edits() {
+            // The original keeps the backend's format, which is PNG unless asked for otherwise.
+            targets.push(raw_path(&target, Format::Png));
+            targets.push(raw_path(&target, format));
+        }
+        // symlink_metadata, so a dangling link counts as taken too: creating the file would fail.
+        if let Some(taken) = targets.iter().find(|p| p.symlink_metadata().is_ok()) {
+            return Err(Error::other(format!("{} already exists; codex-img never overwrites it. Choose another -o or delete it.", taken.display())));
+        }
+        create_parent(&target)?;
+    }
+    Ok(())
+}
+
 pub fn parse_colors(value: &str) -> Result<u16> {
     value.parse::<u16>().ok().filter(|n| (2..=256).contains(n)).ok_or_else(|| Error::usage("--colors must be an integer from 2 to 256."))
 }
@@ -419,9 +445,8 @@ fn write_replacing(path: &Path, bytes: &[u8]) -> Result<bool> {
     if std::fs::read(path).is_ok_and(|old| old == bytes) {
         return Ok(false);
     }
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let temp = path.with_file_name(format!(".{name}.{}.tmp", &util::random_id()[..8]));
-    write_new(&temp, bytes)?;
+    let temp = temp_path(path);
+    write_file(&temp, bytes)?;
     std::fs::rename(&temp, path).map_err(|e| {
         let _ = std::fs::remove_file(&temp);
         Error::other(format!("Could not replace {}: {e}", path.display()))
@@ -429,13 +454,45 @@ fn write_replacing(path: &Path, bytes: &[u8]) -> Result<bool> {
     Ok(true)
 }
 
+/// Write `bytes` to `path`, which must not exist yet. The file only appears under its name once
+/// it's complete: a half-written raw image would look already generated to `batch`. So the bytes go
+/// to a temporary file first, which is then hard-linked into place; unlike a rename, a link never
+/// replaces an existing file.
 fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
+    let temp = temp_path(path);
+    write_file(&temp, bytes)?;
+    let linked = std::fs::hard_link(&temp, path);
+    let _ = std::fs::remove_file(&temp);
+    match linked {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(Error::other(format!("Could not create {}: {e}", path.display()))),
+        // A filesystem without hard links (FAT, some network shares): create the file directly.
+        // write_file still removes it if the write fails.
+        Err(_) => write_file(path, bytes),
+    }
+}
+
+/// A hidden temporary name next to `path`, on the same filesystem.
+fn temp_path(path: &Path) -> PathBuf {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    path.with_file_name(format!(".{name}.{}.tmp", &util::random_id()[..8]))
+}
+
+/// Create `path` (never replacing a file) and write `bytes` to it, removing it again if the write
+/// fails, for example on a full disk.
+fn write_file(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
         .map_err(|e| Error::other(format!("Could not create {}: {e}", path.display())))?;
-    file.write_all(bytes).map_err(|e| Error::other(format!("Could not write {}: {e}", path.display())))
+    if let Err(e) = file.write_all(bytes) {
+        // Closed first: Windows can't remove an open file.
+        drop(file);
+        let _ = std::fs::remove_file(path);
+        return Err(Error::other(format!("Could not write {}: {e}", path.display())));
+    }
+    Ok(())
 }
 
 /// Write the image as `wanted`, applying `transform` and converting (and quantizing, with
@@ -702,5 +759,46 @@ mod tests {
         assert!(saved.warning.unwrap().contains("saved the original png"));
 
         assert!(save_image(&png, Format::Png, Format::Png, &images::Encoding::default(), &transform::Transform::default(), &dir.join("b.png")).is_err(), "must not overwrite");
+    }
+
+    #[test]
+    fn new_files_appear_whole_and_never_replace_one() {
+        let dir = crate::auth::tests::temp_dir("write-new");
+        write_new(&dir.join("a.png"), b"first").unwrap();
+        let err = write_new(&dir.join("a.png"), b"second").unwrap_err();
+        assert!(err.message.contains("Could not create"), "{}", err.message);
+        assert_eq!(std::fs::read(dir.join("a.png")).unwrap(), b"first");
+        assert!(write_output(&dir.join("a.png"), b"third", true).unwrap());
+        assert_eq!(std::fs::read(dir.join("a.png")).unwrap(), b"third");
+        // No temporary files are left behind, whichever way it went.
+        let names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["a.png"]);
+    }
+
+    #[test]
+    fn check_output_refuses_taken_names_before_any_request() {
+        let dir = crate::auth::tests::temp_dir("check-output");
+        let out = dir.join("new/car.png");
+        let at = |p: &Path| p.display().to_string();
+        let none = transform::Transform::default();
+        let trim = transform::Transform { trim: Some(0), ..Default::default() };
+        check_output(Some(&at(&out)), Format::Png, 1, &none).unwrap();
+        assert!(dir.join("new").is_dir(), "the folder is created up front");
+
+        std::fs::write(dir.join("new/car.raw.png"), b"x").unwrap();
+        check_output(Some(&at(&out)), Format::Png, 1, &none).unwrap();
+        let err = check_output(Some(&at(&out)), Format::Png, 1, &trim).unwrap_err();
+        assert!(err.message.contains("car.raw.png already exists"), "{}", err.message);
+
+        std::fs::write(dir.join("new/car-2.png"), b"x").unwrap();
+        check_output(Some(&at(&out)), Format::Png, 1, &none).unwrap();
+        assert!(check_output(Some(&at(&out)), Format::Png, 2, &none).unwrap_err().message.contains("car-2.png"));
+
+        // A folder gets new, unique names.
+        check_output(Some(&at(&dir.join("new"))), Format::Png, 3, &trim).unwrap();
+        check_output(None, Format::Png, 1, &trim).unwrap();
+        // A file where the folder should be.
+        std::fs::write(dir.join("blocked"), b"x").unwrap();
+        assert!(check_output(Some(&at(&dir.join("blocked/car.png"))), Format::Png, 1, &none).is_err());
     }
 }
