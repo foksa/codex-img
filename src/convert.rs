@@ -52,28 +52,38 @@ Options:
                             fits in the box), cover (fills it, crops the centre),
                             contain (fits, pads with transparency), fill (stretches)
       --no-enlarge          Only shrink: --resize leaves smaller images at their size
-      --key <colour>        Make painted-in ground transparent (the sea under a boat,
-                            grass under a tree): pixels of this colour connected to the
-                            transparent background or the image's border. A flood
-                            fill, so matching paint enclosed by the sprite's outline
-                            survives; small islands the removed ground leaves behind
-                            (foam, spray) go too. Repeatable. Runs after --hard-alpha,
+      --key <colour>        Make an unwanted background transparent: the sea painted
+                            under a boat, the sky behind a building. Pixels of this
+                            colour connected to the transparent background or the
+                            image's border go; it's a flood fill, so matching paint
+                            enclosed by the object's outline survives, and small
+                            islands the removed background leaves behind (foam,
+                            spray) go too. Repeatable. Runs after --hard-alpha,
                             before --trim. The colour is one of:
-                              auto[:tol]     the ground's own colours, sampled from
-                                             the bottom 5% of the visible content.
-                                             Only for images with painted ground:
-                                             otherwise it keys the object's base
+                              auto[:tol]     the background's own colours, sampled
+                                             along the outer 5% of the --key-region
+                                             edges (all four without a region). Only
+                                             where those edges really are background:
+                                             otherwise it keys the object's own edge
                               <name>         red, orange (browns too), yellow, green,
                                              cyan, blue, purple, pink, white, gray,
                                              black
                               #rrggbb[:tol]  tol per channel (default 32)
-      --key-region <band>   Only key out within a band of the visible content, e.g.
-                            bottom:30% (also top, left, right). Keeps matching
-                            colours higher up safe, like sky-blue windows
-      --ground-cut[=f]      Before --key, cut off the bottom rows where at least f
-                            (default 0.4) of the visible pixels match the key: below
-                            the line where the object meets the painted ground, like
-                            a boat's waterline (the submerged part goes too)
+      --key-region <bands>  Only key out within bands along edges of the visible
+                            content, each a share of its height or width:
+                            bottom:30% (ground under a sprite), top:40%,left:15%,
+                            right:15% (sky around a building), or all:20%. Matching
+                            colours elsewhere stay safe, like sky-blue windows
+      --key-spread <step>   Let keying spread from each removed pixel into neighbours
+                            whose colour differs by at most step per channel (e.g.
+                            24), step by step. It then follows gradients the key
+                            colours don't cover, like a sky fading from blue to gold
+                            and the shading of clouds, and stops at outlines. Higher
+                            steps also take low-contrast scenery, like distant hills
+      --key-cut[=f]         Before --key, from each --key-region edge inward, cut
+                            off whole rows (or columns) while at least f (default
+                            0.4) of their visible pixels match the key: below a
+                            boat's waterline, or above a roofline. Needs --key-region
       --trim-density [edges:]f
                             With --trim, also drop sparse rows at the bottom: those
                             with fewer visible pixels than f (e.g. 0.15) of the
@@ -101,7 +111,8 @@ Examples:
   codex-img convert car.png --hard-alpha --trim --resize 400x300 --no-enlarge -c 160
   codex-img convert cockpit.png --resize 1920x1080 --fit cover
   codex-img convert raw/*.png --trim -c 160 -o public/ --force
-  codex-img convert boat.png --hard-alpha --key auto --key-region bottom:30% --ground-cut --trim --trim-density 0.15"#
+  codex-img convert boat.png --hard-alpha --key auto --key-region bottom:30% --key-cut --trim --trim-density 0.15
+  codex-img convert house.png --key auto --key-region top:80% --key-spread 24 --trim"#
 }
 
 pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
@@ -137,7 +148,8 @@ pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
             "--no-enlarge" => opts.transform.no_enlarge = true,
             "--key" => opts.transform.keys.push(transform::Key::parse(&value()?)?),
             "--key-region" => opts.transform.key_region = Some(transform::Region::parse(&value()?)?),
-            "--ground-cut" => opts.transform.ground_cut = Some(inline.as_deref().map(transform::parse_ground_cut).transpose()?.unwrap_or(transform::GROUND_CUT)),
+            "--key-spread" => opts.transform.key_spread = Some(transform::parse_key_spread(&value()?)?),
+            "--key-cut" => opts.transform.key_cut = Some(inline.as_deref().map(transform::parse_key_cut).transpose()?.unwrap_or(transform::KEY_CUT)),
             "--trim-density" => opts.transform.trim_density = Some(transform::Density::parse(&value()?)?),
             "--hard-alpha" => {
                 opts.transform.hard_alpha =
