@@ -567,6 +567,9 @@ pub fn run(opts: &BatchOptions) -> Result<i32> {
 
 fn execute(opts: &BatchOptions, spec: &Spec, backend: &Backend, credentials: &dyn Fn() -> Result<Credentials>) -> Result<i32> {
     let selected = select(spec, &opts.filters)?;
+    if opts.convert {
+        check_outputs(spec)?;
+    }
     let report = Report { json: opts.json, quiet: opts.quiet, tally: Mutex::new(Tally::default()) };
     if opts.generate {
         let plan = generation_plan(spec, &selected);
@@ -621,6 +624,49 @@ fn execute(opts: &BatchOptions, spec: &Spec, backend: &Backend, credentials: &dy
         }
     }
     Ok(tally.exit_code)
+}
+
+/// Conversion replaces its outputs, so none may be an input: a raw image or an `images` file of
+/// any asset. raw_dir and out_dir can overlap (both ".", or one a symlink to the other), and then
+/// `<key>.png` would be converted over its own raw image, losing it. Checked before any work, so a
+/// spec like that costs no quota.
+fn check_outputs(spec: &Spec) -> Result<()> {
+    let mut inputs: Vec<(PathBuf, String)> = Vec::new();
+    for asset in &spec.assets {
+        inputs.push((resolved(&spec.raw_path(asset)), format!("the raw image of \"{}\"", asset.key)));
+        inputs.extend(asset.images.iter().map(|p| (resolved(p), format!("an image \"{}\" uses", asset.key))));
+    }
+    for asset in spec.assets.iter().filter(|a| a.publish) {
+        let out = spec.out_path(asset);
+        if let Some((_, what)) = inputs.iter().find(|(input, _)| *input == resolved(&out)) {
+            return Err(Error::usage(format!(
+                "assets.\"{}\": its output {} would overwrite {what}; give out_dir and raw_dir separate folders.",
+                asset.key,
+                out.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// `path` with symlinks resolved, also when it doesn't exist yet: its deepest existing ancestor is
+/// resolved and the rest appended, so two spellings of one file compare equal.
+fn resolved(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut current = path;
+    loop {
+        let existing = if current.as_os_str().is_empty() { Path::new(".") } else { current };
+        if let Ok(real) = existing.canonicalize() {
+            return rest.iter().rev().fold(real, |path, part| path.join(part));
+        }
+        match (current.parent(), current.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                current = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
 }
 
 fn num_cpus() -> usize {
@@ -869,6 +915,44 @@ mod tests {
         // Converting a missing raw image fails, and says so.
         let convert_only = BatchOptions { generate: false, convert: true, ..opts };
         assert_eq!(execute(&convert_only, &spec, &backend, &|| Ok(creds())).unwrap(), 1);
+    }
+
+    #[test]
+    fn refuses_outputs_that_would_overwrite_inputs() {
+        let dir = crate::auth::tests::temp_dir("batch-overlap");
+        let png = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, crate::images::tests::PNG_B64).unwrap();
+        std::fs::write(dir.join("hero.png"), &png).unwrap();
+        let no_login = || -> Result<Credentials> { Err(Error::auth("no login")) };
+        let backend = Backend::new("http://127.0.0.1:9");
+        let run = |value: Value| execute(&options(&[]), &parse_spec(&value, &dir).unwrap(), &backend, &no_login);
+
+        // Same folder for both: hero.png would be converted over its own raw image.
+        let same = run(json!({"raw_dir": ".", "out_dir": ".", "assets": {"hero": {"prompt": "A hero.", "resize": "5x5"}}}));
+        assert!(same.unwrap_err().message.contains("would overwrite the raw image of \"hero\""));
+        assert_eq!(std::fs::read(dir.join("hero.png")).unwrap(), png, "the raw image is untouched");
+        // A different format doesn't collide.
+        assert_eq!(run(json!({"raw_dir": ".", "out_dir": ".", "assets": {"hero": {"prompt": "A hero.", "format": "webp"}}})).unwrap(), 0);
+
+        // The output folder is a symlink to the raw folder.
+        std::fs::create_dir_all(dir.join("raw")).unwrap();
+        std::fs::write(dir.join("raw/hero.png"), &png).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.join("raw"), dir.join("out")).unwrap();
+            let linked = run(json!({"assets": {"hero": {"prompt": "A hero."}}}));
+            assert!(linked.unwrap_err().message.contains("would overwrite"));
+        }
+
+        // Another asset's reference file.
+        let images = json!({"raw_dir": "raw", "out_dir": "public", "assets": {
+            "a": {"prompt": "A.", "images": ["public/b.png"]},
+            "b": {"prompt": "B."}
+        }});
+        assert!(run(images).unwrap_err().message.contains("an image \"a\" uses"));
+        // Generating only never writes outputs, so it isn't refused.
+        let generate_only = BatchOptions { convert: false, dry_run: true, ..options(&[]) };
+        let spec = parse_spec(&json!({"raw_dir": ".", "out_dir": ".", "assets": {"hero": {"prompt": "A hero."}}}), &dir).unwrap();
+        assert_eq!(execute(&generate_only, &spec, &backend, &no_login).unwrap(), 0);
     }
 
     #[test]
