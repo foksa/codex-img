@@ -6,7 +6,7 @@ Generate images from the command line with your ChatGPT/Codex subscription. It n
 
 ## Install
 
-**Prebuilt binary:** download the archive for your platform from [Releases](https://github.com/foksa/codex-img/releases). Builds exist for macOS (Apple Silicon and Intel) and Linux (x86-64 and ARM64, fully static). Unpack it and put `codex-img` on your `PATH`. The archive also contains the agent skill in `skills/codex-img`.
+**Prebuilt binary:** download the archive for your platform from [Releases](https://github.com/foksa/codex-img/releases). Builds exist for macOS (Apple Silicon and Intel), Linux (x86-64 and ARM64, fully static) and Windows (x86-64, a `.zip`). Unpack it and put `codex-img` on your `PATH`. The archive also contains the agent skill in `skills/codex-img`.
 
 ```sh
 tar -xzf codex-img-*-aarch64-apple-darwin.tar.gz
@@ -15,11 +15,22 @@ install codex-img-*/codex-img ~/.local/bin/
 
 On macOS, a binary downloaded with a browser may be quarantined; clear that with `xattr -d com.apple.quarantine ~/.local/bin/codex-img`.
 
+On Windows (PowerShell):
+
+```powershell
+Expand-Archive codex-img-*-x86_64-pc-windows-msvc.zip -DestinationPath $env:LOCALAPPDATA\codex-img
+# then add the unpacked codex-img-* folder to your PATH, or run codex-img.exe from it
+```
+
+The login is read from `%USERPROFILE%\.codex\auth.json` (or `%CODEX_HOME%\auth.json`), where `codex login` puts it.
+
 **From source:**
 
 ```sh
 ./scripts/install.sh    # needs a Rust toolchain (https://rustup.rs)
 ```
+
+On Windows, `install.sh` doesn't apply: run `cargo build --release` and use `target\release\codex-img.exe`.
 
 This builds `target/release/codex-img`, a single ~2 MB binary with no runtime dependencies, and symlinks:
 - the binary to `~/.local/bin/codex-img` (override with `BIN_DIR`);
