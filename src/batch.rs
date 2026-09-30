@@ -10,7 +10,7 @@ use crate::images::{self, Encoding, Format, MAX_EDIT_IMAGES};
 use crate::transform::{self, Density, Fit, Key, Region, Resize, Transform};
 use crate::util;
 use serde_json::{json, Map, Value};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Condvar, Mutex};
 use std::time::Instant;
 
@@ -649,9 +649,27 @@ fn check_outputs(spec: &Spec) -> Result<()> {
     Ok(())
 }
 
-/// `path` with symlinks resolved, also when it doesn't exist yet: its deepest existing ancestor is
-/// resolved and the rest appended, so two spellings of one file compare equal.
+/// `path` with symlinks and `.`/`..` resolved, also where it doesn't exist yet, so two spellings
+/// of one file compare equal. Components are taken in order; before each `..`, the path so far
+/// is resolved (a symlink goes to its target) and then loses its last component. Parts that don't
+/// exist yet will be created as plain directories, so stepping up out of them is exact.
 fn resolved(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out = resolved_prefix(&out);
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    resolved_prefix(&out)
+}
+
+/// A path without `..`: its deepest existing ancestor with symlinks resolved, and the rest appended.
+fn resolved_prefix(path: &Path) -> PathBuf {
     let mut rest = Vec::new();
     let mut current = path;
     loop {
@@ -942,6 +960,20 @@ mod tests {
             let linked = run(json!({"assets": {"hero": {"prompt": "A hero."}}}));
             assert!(linked.unwrap_err().message.contains("would overwrite"));
         }
+
+        // `..` under a folder that doesn't exist yet: future/.. is the raw folder itself.
+        let dotdot = run(json!({"raw_dir": ".", "out_dir": "future/..", "assets": {"hero": {"prompt": "A hero.", "resize": "5x5"}}}));
+        assert!(dotdot.unwrap_err().message.contains("would overwrite the raw image"));
+        assert!(!dir.join("future").exists() && std::fs::read(dir.join("hero.png")).unwrap() == png);
+        // `..` after a symlink steps out of its target, not out of the link's own folder.
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(dir.join("raw/deep")).unwrap();
+            std::os::unix::fs::symlink(dir.join("raw/deep"), dir.join("link")).unwrap();
+            let through = run(json!({"raw_dir": "raw", "out_dir": "link/..", "assets": {"hero": {"prompt": "A hero."}}}));
+            assert!(through.unwrap_err().message.contains("would overwrite"));
+        }
+        assert_eq!(resolved(Path::new("/tmp/../tmp/./a/b/../c.png")), resolved(Path::new("/tmp/a/c.png")));
 
         // Another asset's reference file.
         let images = json!({"raw_dir": "raw", "out_dir": "public", "assets": {
