@@ -27,6 +27,9 @@ Usage:
   codex-img batch <spec.json> [key or folder...]
                               Generate the missing images of a JSON asset spec, then
                               convert them all; see `codex-img batch --help`
+  codex-img tile <panorama> -o tile.png
+                              Make a panorama wrap around seamlessly (one image of
+                              quota); see `codex-img tile --help`
 
 Options:
   -o, --output <path>       Output file or directory (default: current directory)
@@ -111,6 +114,8 @@ pub enum Command {
     SheetHelp,
     Batch(crate::batch::BatchOptions),
     BatchHelp,
+    Tile(crate::tile::TileOptions),
+    TileHelp,
     Run(Options),
 }
 
@@ -139,6 +144,9 @@ pub fn parse(args: &[String]) -> Result<Command> {
     }
     if args.first().is_some_and(|a| a == "batch") {
         return Ok(crate::batch::parse(&args[1..])?.map_or(Command::BatchHelp, Command::Batch));
+    }
+    if args.first().is_some_and(|a| a == "tile") {
+        return Ok(crate::tile::parse(&args[1..])?.map_or(Command::TileHelp, Command::Tile));
     }
     let mut values: Vec<(&'static str, String)> = Vec::new();
     let mut flags: Vec<&'static str> = Vec::new();
@@ -611,6 +619,8 @@ mod tests {
         assert_eq!(run(&["sheet music on a piano"]).prompt, "sheet music on a piano");
         assert!(matches!(parse(&args(&["batch", "art/assets.json"])).unwrap(), Command::Batch(_)));
         assert_eq!(parse(&args(&["batch", "-h"])).unwrap(), Command::BatchHelp);
+        assert!(matches!(parse(&args(&["tile", "sky.png", "-o", "t.png"])).unwrap(), Command::Tile(_)));
+        assert_eq!(run(&["tile floor texture"]).prompt, "tile floor texture", "a quoted prompt starting with tile");
         assert_eq!(parse(&args(&["-h"])).unwrap(), Command::Help);
         assert_eq!(parse(&args(&["--version"])).unwrap(), Command::Version);
     }

@@ -58,6 +58,10 @@ It never overwrites the input, and existing files only with `--force`: re-runnin
 
 `codex-img sheet assets/harbor/*.png -o /tmp/harbor-sheet.png` lays the images out in one labelled grid. Look at that one image instead of opening each file. Sprites stand on a common baseline, so floating sprites, leftover background patches and style drift across a set stand out. `--same-scale` keeps relative sizes, `--force` replaces an earlier sheet, and `--bg '#rrggbb'` changes the background (default: muted green). Write sheets outside the project (for example to `/tmp`), because they're for review, not assets.
 
+### Repeating backgrounds: `codex-img tile`
+
+For a sky or backdrop that repeats side by side, run `codex-img tile sky.png -o sky-tile.png --preview /tmp/join.png` after generating it. The panorama then wraps around seamlessly, so it doesn't need to be mirrored, which shows landmarks twice. It uses one image of quota and keeps the size, framing and every pixel away from the join. Add `--prompt "what the picture shows"` if the join comes out wrong. Always look at the `--preview` image, which shows the join in the middle. Don't prompt landmarks onto an edge as a workaround for mirroring.
+
 ### Many assets: `codex-img batch`
 
 For a set of assets, such as a game's art, keep them in a JSON spec and run `codex-img batch spec.json [key or folder...]` instead of scripting many calls. Each asset has a prompt, generation fields and `convert` options with underscores (`hard_alpha`, `max: [W, H]`). The spec also has a shared `style` appended to every prompt, `defaults`, and `reference` keys for edits of another asset's raw image. `batch` generates only missing raw images (delete one to re-roll it) and converts all of them, rewriting only files that changed. Run `--dry-run` first to see what would be generated, because that uses quota. `--convert-only` needs no login. See `codex-img batch --help` for the spec format.
