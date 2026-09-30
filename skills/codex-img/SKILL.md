@@ -48,10 +48,15 @@ EOF
 - Game sprites: `codex-img convert raw/car.png --trim=4 --resize 400x -o sprites/`, or the same flags when generating. Keep the raw generated image; there's no seed to regenerate it.
 - Generated transparent images have soft, slightly see-through alpha (even "solid" areas come back at 250–254). For pixel art or any style with crisp edges, add `--hard-alpha`: every pixel becomes fully solid or fully transparent, and it stays that way through `--resize` and `-c`. Compare one result with the project's existing art to decide. A full pixel-art sprite step: `codex-img convert raw/car.png --hard-alpha --trim --resize 400x300 --no-enlarge -c 160 -o assets/`.
 - With several inputs, `-o` must be a directory ending in `/`.
+- Painted-in ground: the model sometimes paints ground under a sprite despite "no ground" in the prompt, most often sea under boats and docks. Remove it with `--key auto --key-region bottom:30% --ground-cut --trim --trim-density 0.15` (after `--hard-alpha` for pixel art). `auto` samples the ground's colours from the bottom rows. `--key` flood-fills from the transparent background, so matching paint inside the outline survives, and it also clears the foam and specks left behind. Use it only on images that actually have painted ground: on other sprites, `auto` would key away the object's own base (a trunk, wheels). If `auto` gets it wrong, name the colours: `--key blue --key white`, or `--key '#3070c0:40'`. `--trim-density 0.15` stops leftover specks from becoming the bottom edge and making the sprite float. Check the result on a `sheet`.
 
 Resizing uses premultiplied alpha, so the colour stored under transparent pixels (generated images often hide a dark vignette there) can't bleed into the edges. PNG and lossless WebP output also gets the nearest visible colour written under transparent pixels, so engines and other tools that filter without premultiplying don't show a dark halo either. `--no-bleed` turns that off. You don't need to clean transparent pixels yourself.
 
-It never overwrites existing files or the input. Keep prompts that start with the word "convert" quoted, because a bare `convert` as the first argument runs this subcommand.
+It never overwrites the input, and existing files only with `--force`: re-running a pipeline into the same `-o` directory then rewrites just the files whose output changed (the same input and options always give the same bytes). Keep prompts that start with the word "convert" quoted, because a bare `convert` as the first argument runs this subcommand.
+
+### Reviewing a batch: `codex-img sheet`
+
+`codex-img sheet assets/harbor/*.png -o /tmp/harbor-sheet.png` lays the images out in one labelled grid. Look at that one image instead of opening each file. Sprites stand on a common baseline, so floating sprites, leftover background patches and style drift across a set stand out. `--same-scale` keeps relative sizes, `--force` replaces an earlier sheet, and `--bg '#rrggbb'` changes the background (default: muted green). Write sheets outside the project (for example to `/tmp`), because they're for review, not assets.
 
 ## Workflow
 

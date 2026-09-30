@@ -4,6 +4,7 @@ mod cli;
 mod convert;
 mod error;
 mod images;
+mod sheet;
 mod transform;
 mod util;
 
@@ -43,6 +44,11 @@ fn run(args: &[String]) -> i32 {
             Ok(0)
         }
         Command::Convert(options) => Ok(convert::run(&options)),
+        Command::SheetHelp => {
+            println!("{}", sheet::help());
+            Ok(0)
+        }
+        Command::Sheet(options) => sheet::run(&options),
         Command::Run(options) => generate(options),
     };
     result.unwrap_or_else(|error| {

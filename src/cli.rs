@@ -21,6 +21,9 @@ Usage:
   codex-img convert <input>... [-o path] [-f fmt] [-c n] [--trim] [--resize WxH]
                               Convert, trim or resize existing images locally (no quota);
                               see `codex-img convert --help`
+  codex-img sheet <input>... -o sheet.png
+                              Lay images out in one labelled grid to review a batch;
+                              see `codex-img sheet --help`
 
 Options:
   -o, --output <path>       Output file or directory (default: current directory)
@@ -39,6 +42,13 @@ Options:
       --trim[=pad]          Crop transparent borders to the visible pixels
       --hard-alpha[=n]      Every pixel fully solid (alpha above n, default 16) or
                             fully transparent; for pixel art
+      --key <colour>        Remove painted-in ground connected to the transparent
+                            area: auto (sampled from the bottom rows), a colour name
+                            (blue, white, green, ...) or #rrggbb[:tol]; repeatable.
+                            --key-region bottom:30% limits it to a band;
+                            --ground-cut[=f] first cuts rows that are mostly ground
+      --trim-density <f>    With --trim, also drop sparse bottom rows (under f of the
+                            fullest row), so leftover specks don't make sprites float
       --resize <size>       WxH, Wx or xH, after --trim; --fit inside (default) |
                             cover | contain | fill for WxH. With --trim, --resize or
                             --hard-alpha the original is also kept, as <name>.raw.png.
@@ -94,6 +104,8 @@ pub enum Command {
     Status { json: bool },
     Convert(crate::convert::ConvertOptions),
     ConvertHelp,
+    Sheet(crate::sheet::SheetOptions),
+    SheetHelp,
     Run(Options),
 }
 
@@ -113,9 +125,12 @@ pub fn parse(args: &[String]) -> Result<Command> {
     if args.first().is_some_and(|a| a == "status") && args[1..].iter().all(|a| a == "--json") {
         return Ok(Command::Status { json: args.len() > 1 });
     }
-    // Always a subcommand: a prompt starting with the word must be quoted ("convert ...").
+    // Always subcommands: a prompt starting with one of these words must be quoted ("convert ...").
     if args.first().is_some_and(|a| a == "convert") {
         return Ok(crate::convert::parse(&args[1..])?.map_or(Command::ConvertHelp, Command::Convert));
+    }
+    if args.first().is_some_and(|a| a == "sheet") {
+        return Ok(crate::sheet::parse(&args[1..])?.map_or(Command::SheetHelp, Command::Sheet));
     }
     let mut values: Vec<(&'static str, String)> = Vec::new();
     let mut flags: Vec<&'static str> = Vec::new();
@@ -156,13 +171,17 @@ pub fn parse(args: &[String]) -> Result<Command> {
             "--fit" => "fit",
             "--no-bleed" => "no-bleed",
             "--no-enlarge" => "no-enlarge",
+            "--key" => "key",
+            "--key-region" => "key-region",
+            "--trim-density" => "trim-density",
+            "--ground-cut" => "ground-cut",
             "-h" | "--help" => "help",
             "-v" | "--version" => "version",
             _ => return Err(Error::usage(format!("Unknown option: {arg}"))),
         };
         // --trim and --hard-alpha take values only inline (--trim=8): a bare word after them is the prompt.
         if matches!(key, "json" | "quiet" | "via-responses" | "dither" | "lossless" | "no-bleed" | "no-enlarge" | "help" | "version")
-            || (matches!(key, "trim" | "hard-alpha") && inline.is_none())
+            || (matches!(key, "trim" | "hard-alpha" | "ground-cut") && inline.is_none())
         {
             flags.push(key);
         } else {
@@ -209,10 +228,17 @@ pub fn parse(args: &[String]) -> Result<Command> {
             Some(threshold) => Some(transform::parse_hard_alpha(&threshold)?),
             None => flags.contains(&"hard-alpha").then_some(transform::FAINT_ALPHA),
         },
+        keys: values.iter().filter(|(k, _)| *k == "key").map(|(_, v)| transform::Key::parse(v)).collect::<Result<_>>()?,
+        key_region: last("key-region").map(|v| transform::Region::parse(&v)).transpose()?,
+        ground_cut: match last("ground-cut") {
+            Some(share) => Some(transform::parse_ground_cut(&share)?),
+            None => flags.contains(&"ground-cut").then_some(transform::GROUND_CUT),
+        },
         trim: match last("trim") {
             Some(padding) => Some(transform::parse_trim_padding(&padding)?),
             None => flags.contains(&"trim").then_some(0),
         },
+        trim_density: last("trim-density").map(|v| transform::Density::parse(&v)).transpose()?,
         resize: last("resize").map(|v| transform::Resize::parse(&v)).transpose()?,
         fit: last("fit").map(|v| transform::Fit::parse(&v)).transpose()?,
         no_bleed: flags.contains(&"no-bleed"),
@@ -339,18 +365,48 @@ pub struct Converted {
     /// Lossy quality codex-img applied, if it did a lossy encode.
     pub output_quality: Option<u8>,
     pub trim: Option<transform::Rect>,
+    /// With `overwrite`: the file already held exactly these bytes, so it was left alone.
+    pub unchanged: bool,
 }
 
-/// `convert` subcommand: apply `transform` and write `bytes` as `wanted` to a new file.
+/// `convert` subcommand: apply `transform` and write `bytes` as `wanted` to a new file, or with
+/// `overwrite` replace an existing one.
 /// Unlike generated images, a local input that doesn't fully decode is an error, not something to
 /// copy through: the fast paths (same format, best-effort optimization) would otherwise pass it on.
-pub fn save_converted(bytes: &[u8], wanted: Format, enc: &images::Encoding, transform: &transform::Transform, path: &Path) -> Result<Converted> {
+pub fn save_converted(bytes: &[u8], wanted: Format, enc: &images::Encoding, transform: &transform::Transform, path: &Path, overwrite: bool) -> Result<Converted> {
     let actual = images::sniff(bytes).ok_or_else(|| Error::other("Input is not a PNG, JPEG or WebP image."))?;
     let processed = process(bytes, actual, wanted, enc, transform, false)?;
     let (input_size, size) = processed.sizes.ok_or_else(|| Error::other("Input image could not be decoded."))?;
+    let unchanged = !write_output(path, &processed.bytes, overwrite)?;
+    Ok(Converted { path: path.to_path_buf(), input_size, size, output_quality: processed.output_quality, trim: processed.trim, unchanged })
+}
+
+/// Write `bytes` to a new file at `path`, creating its directory. With `overwrite`, replace an
+/// existing file instead; returns false when it already held exactly these bytes.
+pub fn write_output(path: &Path, bytes: &[u8], overwrite: bool) -> Result<bool> {
     create_parent(path)?;
-    write_new(path, &processed.bytes)?;
-    Ok(Converted { path: path.to_path_buf(), input_size, size, output_quality: processed.output_quality, trim: processed.trim })
+    if overwrite {
+        write_replacing(path, bytes)
+    } else {
+        write_new(path, bytes).map(|()| true)
+    }
+}
+
+/// Replace `path` with `bytes` through a temporary file and a rename, so nothing ever sees half a
+/// file. Returns false without writing when the file already holds exactly these bytes: output is
+/// deterministic, so re-running a pipeline leaves untouched files alone (git, CDN uploads).
+fn write_replacing(path: &Path, bytes: &[u8]) -> Result<bool> {
+    if std::fs::read(path).is_ok_and(|old| old == bytes) {
+        return Ok(false);
+    }
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let temp = path.with_file_name(format!(".{name}.{}.tmp", &util::random_id()[..8]));
+    write_new(&temp, bytes)?;
+    std::fs::rename(&temp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&temp);
+        Error::other(format!("Could not replace {}: {e}", path.display()))
+    })?;
+    Ok(true)
 }
 
 fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -520,6 +576,15 @@ mod tests {
         assert_eq!(run(&["--hard-alpha", "x"]).transform.hard_alpha, Some(16));
         assert_eq!(run(&["--hard-alpha=100", "x"]).transform.hard_alpha, Some(100));
         assert!(run(&["--resize", "400x", "--no-enlarge", "x"]).transform.no_enlarge);
+        let t = run(&["--key", "auto", "--key=#102030:8", "--key-region", "bottom:30%", "--trim", "--trim-density", "0.15", "--ground-cut", "x"]).transform;
+        assert_eq!(t.keys, vec![transform::Key::Auto { tolerance: 32 }, transform::Key::Rgb { rgb: [16, 32, 48], tolerance: 8 }]);
+        assert_eq!((t.key_region.map(|r| r.percent), t.trim_density.map(|d| d.percent)), (Some(30), Some(15)));
+        assert!(usage_error(&["--trim-density", "0.15", "x"]).contains("--trim"));
+        assert!(usage_error(&["--key-region", "bottom:30%", "x"]).contains("--key"));
+        assert!(usage_error(&["--key", "sea", "x"]).contains("--key"));
+        assert_eq!(t.ground_cut, Some(40));
+        assert_eq!(run(&["--key", "blue", "--ground-cut=0.6", "x"]).transform.ground_cut, Some(60));
+        assert!(usage_error(&["--ground-cut", "x"]).contains("--key"));
         assert!(usage_error(&["--no-enlarge", "x"]).contains("--resize"));
         let o = run(&["--via-responses", "-m", "gpt-6-sol", "x"]);
         assert!(o.via_responses);
@@ -534,6 +599,8 @@ mod tests {
         assert_eq!(run(&["convert this photo to night"]).prompt, "convert this photo to night");
         assert!(matches!(parse(&args(&["convert", "a.png", "-o", "a.webp"])).unwrap(), Command::Convert(_)));
         assert_eq!(parse(&args(&["convert", "-h"])).unwrap(), Command::ConvertHelp);
+        assert!(matches!(parse(&args(&["sheet", "a.png", "-o", "s.png"])).unwrap(), Command::Sheet(_)));
+        assert_eq!(run(&["sheet music on a piano"]).prompt, "sheet music on a piano");
         assert_eq!(parse(&args(&["-h"])).unwrap(), Command::Help);
         assert_eq!(parse(&args(&["--version"])).unwrap(), Command::Version);
     }
