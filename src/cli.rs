@@ -633,11 +633,14 @@ mod tests {
     #[test]
     fn output_path_handles_files_suffixes_and_directories() {
         let now = 1_767_323_045; // 2026-01-02T03:04:05Z
+        // An absolute folder on every OS: on Windows, "/x" has no drive and isn't absolute.
+        let x = std::env::temp_dir().join("x");
+        let at = |rest: &str| format!("{}/{rest}", x.display());
         let p = |o: &str, f, id, i, n| output_path(Some(o), f, id, i, n, now);
-        assert_eq!(p("/x/out.png", Format::Png, "ig_1", 0, 1), PathBuf::from("/x/out.png"));
-        assert_eq!(p("/x/out", Format::Png, "ig_1", 0, 1), PathBuf::from("/x/out.png"));
-        assert_eq!(p("/x/out.png", Format::Png, "ig_1", 1, 3), PathBuf::from("/x/out-2.png"));
-        assert_eq!(p("/x/dir/", Format::Jpeg, "ig_abc", 0, 1), PathBuf::from("/x/dir/codex-img-20260102T030405-ig_abc.jpg"));
+        assert_eq!(p(&at("out.png"), Format::Png, "ig_1", 0, 1), x.join("out.png"));
+        assert_eq!(p(&at("out"), Format::Png, "ig_1", 0, 1), x.join("out.png"));
+        assert_eq!(p(&at("out.png"), Format::Png, "ig_1", 1, 3), x.join("out-2.png"));
+        assert_eq!(p(&at("dir/"), Format::Jpeg, "ig_abc", 0, 1), x.join("dir").join("codex-img-20260102T030405-ig_abc.jpg"));
         assert_eq!(sanitize_id("a1b2c3d4-e5f6-7890-abcd-ef0123456789"), "ef0123456789");
     }
 
