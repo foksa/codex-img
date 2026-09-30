@@ -228,7 +228,7 @@ The Codex image endpoint isn't a public API, and nothing about its behaviour is 
 
 **What has been observed, not guaranteed**
 
-- **Model.** The backend picks the image model and ignores the `model` field; the Codex CLI hardcodes `gpt-image-2` too. It currently reports `gpt-image-2-codex`. When the backend upgrades what it serves (such as Images 2.5), both routes get the upgrade. `--model` only picks the routing model for `--via-responses`.
+- **Model.** On the direct route, `codex-img` sends `model: "gpt-image-2"`, as the Codex CLI does, and the response doesn't say which model made the image. The Responses route has reported `gpt-image-2-codex`. Which model serves each route, and whether that changes, isn't known. `--model` only picks the routing model for `--via-responses`.
 - **Size** is a hint: `1536x1024` has come back at 1536x1024 and also at 1370x1148, and square comes back around 1254x1254. Add `--resize WxH --fit cover` to get exact pixels.
 - **Quality** is capped at medium on the subscription.
 - **Transparency.** `background: transparent` gives real alpha, but "solid" pixels come back at alpha 250–254 (`--hard-alpha` fixes that), and the model sometimes paints a background anyway (`--key` removes it).
@@ -237,7 +237,7 @@ The Codex image endpoint isn't a public API, and nothing about its behaviour is 
 
 **Reported, not requested.** In `--json`, `imageModel`, `quality`, `background` and `size` are what the backend reported in its response, not what `codex-img` asked for, and they aren't checked against the image. The exception is `size` after `--trim`, `--resize` or `--hard-alpha`: then it's measured from the saved file, and the backend's value moves to `rawSize`. `usage` is the token counts the backend reported.
 
-**Quota.** Every image uses your subscription's image quota. The endpoint doesn't say what a request costs or how much is left, so `codex-img` can't either. It only learns that the quota is used up from the error, and then exits with code `3`; `batch` stops starting new images. `batch --dry-run` lists what would be generated before any quota is spent.
+**Quota.** Requests run on your ChatGPT subscription login, but how they count against your plan's limits isn't known: the endpoint doesn't say which allowance a request uses, what it costs or how much is left, so `codex-img` can't either. When the backend answers with a recognised quota or usage-limit error, `codex-img` exits with code `3` and `batch` stops starting new images. `batch --dry-run` lists what would be generated before anything is sent.
 
 ## Notes
 

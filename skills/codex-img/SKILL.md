@@ -5,7 +5,7 @@ description: Generate or edit raster images (PNG/JPEG/WebP) with the `codex-img`
 
 # codex-img
 
-`codex-img` sends one request to the Codex image endpoint (the same one the Codex CLI uses) and saves the result to disk. Your prompt goes to the image model exactly as written; nothing rewrites it, so the prompt you write is the prompt that gets rendered. Each call uses the user's image quota, so only generate when the user has asked for an image, and don't produce extra variations nobody asked for.
+`codex-img` sends one request to the Codex image endpoint (the same one the Codex CLI uses) and saves the result to disk. Your prompt goes to the image model exactly as written; nothing rewrites it, so the prompt you write is the prompt that gets rendered. Each call counts against the user's ChatGPT subscription limits (exactly how isn't known), so only generate when the user has asked for an image, and don't produce extra variations nobody asked for.
 
 ## Quick reference
 
@@ -82,7 +82,7 @@ For a set of assets, such as a game's art, keep them in a JSON spec and run `cod
 |---|---|---|
 | 0 | Success | Paths are on stdout |
 | 2 | Login missing, expired or rejected | **Don't retry.** Tell the user to open Codex (`codex` CLI or app) so it renews the login, or run `codex login`. |
-| 3 | Subscription image quota used up | **Don't retry.** Tell the user and stop. |
+| 3 | Quota or usage limit reached | **Don't retry.** Tell the user and stop. |
 | 4 | Blocked by moderation | Don't resubmit the same prompt. Explain, and ask before rephrasing anything sensitive. |
 | 1 | Network, timeout or backend error | The backend may already have used quota. Tell the user, and retry at most once. |
 | 64 | Bad arguments | Fix the command |
@@ -105,7 +105,7 @@ If `python3` is missing as well, tell the user rather than trying another image 
 
 - `-s` is a hint. The backend picks the final pixels: a `1536x1024` request has come back at 1536x1024 and also at 1370x1148, and square usually comes back around 1254x1254. Also state the shape in the prompt ("wide landscape"), check `size` in the JSON, and if you need exact dimensions, resize or crop afterwards (for example with `sips -z 1024 1024 in.png --out out.png` on macOS, or ImageMagick) and say so.
 - Edits keep the input image's framing and aspect ratio, and change only what the prompt asks for.
-- The backend chooses the image model and ignores any model name. Asking for a specific model such as "Images 2.5" in the prompt doesn't change it either. `size` and `quality` in the JSON are what the backend reported.
+- The backend chooses the image model; `codex-img` can't pick one, and naming a model such as "Images 2.5" in the prompt doesn't select it. `size` and `quality` in the JSON are what the backend reported.
 - Leave `--via-responses` and `--model` alone. They're a fallback route that rewrites the prompt and ignores `--size`; use them only if the default route is failing.
 
 ## Writing prompts
