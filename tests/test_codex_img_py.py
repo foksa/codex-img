@@ -124,6 +124,20 @@ class Test(unittest.TestCase):
             self.assertEqual(self.run_cli(*args)[0], 64, args)
         self.assertEqual(Server.requests, [])
 
+    def test_unusable_output_fails_before_any_request(self):
+        blocked = os.path.join(self.dir, "blocked")
+        with open(blocked, "w") as f:
+            f.write("x")
+        Server.responses = [self.ok(), self.ok()]
+        for out in (blocked + "/", os.path.join(blocked, "a.png")):
+            self.assertEqual(self.run_cli("a fox", "-o", out, "--quiet")[0], 1, out)
+        self.assertEqual(Server.requests, [])
+        # A folder that doesn't exist yet is created.
+        Server.responses = [self.ok()]
+        code, stdout, _ = self.run_cli("a fox", "-o", os.path.join(self.dir, "made") + "/", "--quiet")
+        self.assertEqual(code, 0)
+        self.assertEqual(os.path.dirname(stdout.strip()), os.path.join(self.dir, "made"))
+
     def test_failed_write_leaves_no_file(self):
         real_open = open
 

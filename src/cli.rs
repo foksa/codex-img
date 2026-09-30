@@ -317,12 +317,13 @@ pub fn output_path(output: Option<&str>, format: Format, id: &str, index: usize,
 
 /// Checked before any quota is spent, so a generated image isn't thrown away: every file `-o`
 /// names (with `-N` suffixes, and the kept original when `transform` edits pixels) must be free,
-/// and its folder creatable. Names made up in a folder are unique. `save_image` still refuses to
-/// overwrite a file that appears while the request runs.
+/// and its folder creatable. A folder `-o` is created here too; names made up in it are unique.
+/// `save_image` still refuses to overwrite a file that appears while the request runs.
 pub fn check_output(output: Option<&str>, format: Format, count: usize, transform: &transform::Transform) -> Result<()> {
     let Some(output) = output else { return Ok(()) };
-    if output.ends_with('/') || std::env::current_dir().unwrap_or_default().join(output).is_dir() {
-        return Ok(());
+    let path = std::env::current_dir().unwrap_or_default().join(output);
+    if output.ends_with('/') || path.is_dir() {
+        return std::fs::create_dir_all(&path).map_err(|e| Error::other(format!("Could not create {}: {e}", path.display())));
     }
     for index in 0..count {
         let target = output_path(Some(output), format, "", index, count, 0);
@@ -797,8 +798,12 @@ mod tests {
         // A folder gets new, unique names.
         check_output(Some(&at(&dir.join("new"))), Format::Png, 3, &trim).unwrap();
         check_output(None, Format::Png, 1, &trim).unwrap();
+        // A folder -o is created, and one that can't be is refused.
+        check_output(Some(&format!("{}/", at(&dir.join("made")))), Format::Png, 1, &none).unwrap();
+        assert!(dir.join("made").is_dir());
         // A file where the folder should be.
         std::fs::write(dir.join("blocked"), b"x").unwrap();
         assert!(check_output(Some(&at(&dir.join("blocked/car.png"))), Format::Png, 1, &none).is_err());
+        assert!(check_output(Some(&format!("{}/", at(&dir.join("blocked")))), Format::Png, 1, &none).is_err());
     }
 }

@@ -414,8 +414,15 @@ def output_path(output, ext, image_id, index, count):
 
 def check_output(output, count):
     """Before any quota is spent: the files -o names must be free and their folder creatable.
-    Names made up in a folder are unique. save() still refuses to overwrite."""
-    if not output or output.endswith("/") or os.path.isdir(os.path.abspath(output)):
+    A folder -o is created here too; names made up in it are unique. save() still refuses to
+    overwrite."""
+    if not output:
+        return
+    if output.endswith("/") or os.path.isdir(os.path.abspath(output)):
+        try:
+            os.makedirs(os.path.abspath(output), exist_ok=True)
+        except OSError as e:
+            raise Fail(OTHER, f"Could not create {os.path.abspath(output)}: {e.strerror or e}")
         return
     for index in range(count):
         target = output_path(output, "png", "", index, count)
