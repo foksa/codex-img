@@ -575,12 +575,12 @@ fn execute(opts: &BatchOptions, spec: &Spec, backend: &Backend, credentials: &dy
         let plan = generation_plan(spec, &selected);
         for &i in selected.iter().filter(|i| !plan.contains(i)) {
             let raw = spec.raw_path(&spec.assets[i]);
-            report.line("generate", &spec.assets[i].key, Status::Skipped, " (raw image exists)", json!({"rawPath": raw.display().to_string()}));
+            report.line("generate", &spec.assets[i].key, Status::Skipped, " (raw image exists)", json!({"rawPath": shown(&raw)}));
         }
         if opts.dry_run {
             for &i in &plan {
                 let raw = spec.raw_path(&spec.assets[i]);
-                report.line("generate", &spec.assets[i].key, Status::Planned, &format!(" -> {}", raw.display()), json!({"rawPath": raw.display().to_string()}));
+                report.line("generate", &spec.assets[i].key, Status::Planned, &format!(" -> {}", shown(&raw)), json!({"rawPath": shown(&raw)}));
             }
         } else if !plan.is_empty() {
             let credentials = credentials()?;
@@ -592,7 +592,7 @@ fn execute(opts: &BatchOptions, spec: &Spec, backend: &Backend, credentials: &dy
         if opts.dry_run {
             for &i in &publish {
                 let out = spec.out_path(&spec.assets[i]);
-                report.line("convert", &spec.assets[i].key, Status::Planned, &format!(" -> {}", out.display()), json!({"path": out.display().to_string()}));
+                report.line("convert", &spec.assets[i].key, Status::Planned, &format!(" -> {}", shown(&out)), json!({"path": shown(&out)}));
             }
         } else {
             let waits = vec![Vec::new(); publish.len()];
@@ -642,7 +642,7 @@ fn check_outputs(spec: &Spec) -> Result<()> {
             return Err(Error::usage(format!(
                 "assets.\"{}\": its output {} would overwrite {what}; give out_dir and raw_dir separate folders.",
                 asset.key,
-                out.display()
+                shown(&out)
             )));
         }
     }
@@ -687,6 +687,20 @@ fn resolved_prefix(path: &Path) -> PathBuf {
     }
 }
 
+/// A path as output shows it. A spec in art/ with out_dir "../public" gives art/../public/...;
+/// when a path steps up with `..` like that and resolves to a file inside the working directory,
+/// it is shown relative to it (public/...), still naming the same file through any symlink.
+/// Anything else is shown as given.
+fn shown(path: &Path) -> String {
+    if path.components().any(|c| c == Component::ParentDir) {
+        let real = resolved(path);
+        if let Some(inside) = std::env::current_dir().and_then(|d| d.canonicalize()).ok().and_then(|cwd| real.strip_prefix(cwd).ok().map(Path::to_path_buf)) {
+            return inside.display().to_string();
+        }
+    }
+    path.display().to_string()
+}
+
 fn num_cpus() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get())
 }
@@ -701,8 +715,8 @@ fn generate(spec: &Spec, plan: &[usize], jobs: usize, backend: &Backend, credent
         match generate_asset(spec, asset, backend, credentials, &session_id) {
             Ok(raw) => {
                 let seconds = started.elapsed().as_secs_f64();
-                let info = json!({"rawPath": raw.display().to_string(), "durationMs": (seconds * 1000.0) as u64});
-                report.line("generate", &asset.key, Status::Ok, &format!(" -> {} ({seconds:.1}s)", raw.display()), info);
+                let info = json!({"rawPath": shown(&raw), "durationMs": (seconds * 1000.0) as u64});
+                report.line("generate", &asset.key, Status::Ok, &format!(" -> {} ({seconds:.1}s)", shown(&raw)), info);
                 Ok(())
             }
             Err(error) => {
@@ -751,7 +765,7 @@ fn generate_asset(spec: &Spec, asset: &Asset, backend: &Backend, credentials: &C
         Err(error) => {
             let kept = raw.with_extension(image.format.extension());
             cli::write_output(&kept, &image.bytes, false)?;
-            Err(Error::other(format!("{}; saved the {} as {}", error.message, image.format.name(), kept.display())))
+            Err(Error::other(format!("{}; saved the {} as {}", error.message, image.format.name(), shown(&kept))))
         }
     }
 }
@@ -763,12 +777,12 @@ fn convert_asset(spec: &Spec, asset: &Asset) -> Result<(Status, String, Value)> 
     let converted = cli::save_converted(&bytes, asset.format, &asset.encoding, &asset.transform, &target, true)?;
     let (w, h) = converted.size;
     let written = std::fs::metadata(&target).map(|m| m.len()).unwrap_or_default();
-    let mut info = json!({"path": target.display().to_string(), "rawPath": raw.display().to_string(), "size": format!("{w}x{h}"), "bytes": written});
+    let mut info = json!({"path": shown(&target), "rawPath": shown(&raw), "size": format!("{w}x{h}"), "bytes": written});
     if let Some(rect) = converted.trim {
         info["trim"] = json!({"x": rect.x, "y": rect.y, "width": rect.width, "height": rect.height});
     }
     let status = if converted.unchanged { Status::Unchanged } else { Status::Ok };
-    Ok((status, format!(" -> {} ({w}x{h}, {} KB)", target.display(), written.div_ceil(1024)), info))
+    Ok((status, format!(" -> {} ({w}x{h}, {} KB)", shown(&target), written.div_ceil(1024)), info))
 }
 
 #[cfg(test)]
@@ -985,6 +999,18 @@ mod tests {
         let generate_only = BatchOptions { convert: false, dry_run: true, ..options(&[]) };
         let spec = parse_spec(&json!({"raw_dir": ".", "out_dir": ".", "assets": {"hero": {"prompt": "A hero."}}}), &dir).unwrap();
         assert_eq!(execute(&generate_only, &spec, &backend, &no_login).unwrap(), 0);
+    }
+
+    #[test]
+    fn shows_paths_without_dot_dot() {
+        assert_eq!(shown(Path::new("art/raw/a.png")), "art/raw/a.png");
+        // Tests run in the crate root.
+        assert_eq!(shown(Path::new("src/../Cargo.toml")), "Cargo.toml");
+        let dir = crate::auth::tests::temp_dir("batch-shown");
+        // Outside the working directory, as given.
+        let outside = dir.join("art/../public/a.png");
+        assert_eq!(shown(&outside), outside.display().to_string());
+        assert_eq!(shown(Path::new("../public/a.png")), "../public/a.png");
     }
 
     #[test]
