@@ -216,15 +216,33 @@ codex-img batch art/assets.json --convert-only     # no login, no quota
 - **Output:** one line per asset and step (`ok`, `skip`, `same`, `FAILED`), or one JSON object each with `--json`. After a login or quota error, no more images are started. The exit code is the worst failure's, so a run with any failure exits non-zero.
 - **Options:** `-j N` sets how many images are generated at the same time (default 4, max 10), and `--generate-only` skips the conversion step.
 
+## The backend
+
+The Codex image endpoint isn't a public API, and nothing about its behaviour is documented. This section separates what codex-img controls from what has been observed in use (as of September 2026). The observations can change whenever the backend does, without a codex-img release.
+
+**What codex-img controls**
+
+- **The request.** By default `codex-img` does what the Codex CLI does: it sends `{prompt, model: "gpt-image-2", size, quality, background}` to `/images/generations`, or to `/images/edits` with `images: [{image_url: "data:…"}]`. Your prompt reaches the image model unchanged. `--via-responses` uses the Responses API with the `image_generation` tool instead (ported from pi-codex-image-gen), where a routing model may rewrite the prompt.
+- **Input checks.** The endpoint doesn't validate its inputs and ignores values it doesn't know, so `codex-img` checks every option before sending anything, and checks that the output file is free before spending quota.
+- **Everything after the image arrives:** conversion, trimming, resizing, palettes, background removal, and never overwriting a file. This runs locally, is covered by tests, and doesn't depend on the backend.
+
+**What has been observed, not guaranteed**
+
+- **Model.** The backend picks the image model and ignores the `model` field; the Codex CLI hardcodes `gpt-image-2` too. It currently reports `gpt-image-2-codex`. When the backend upgrades what it serves (such as Images 2.5), both routes get the upgrade. `--model` only picks the routing model for `--via-responses`.
+- **Size** is a hint: `1536x1024` has come back at 1536x1024 and also at 1370x1148, and square comes back around 1254x1254. Add `--resize WxH --fit cover` to get exact pixels.
+- **Quality** is capped at medium on the subscription.
+- **Transparency.** `background: transparent` gives real alpha, but "solid" pixels come back at alpha 250–254 (`--hard-alpha` fixes that), and the model sometimes paints a background anyway (`--key` removes it).
+- **Masks** are accepted and ignored: requests with and without one used the same number of input tokens. `tile` works around this.
+- **No seed.** An image can't be generated again exactly, which is why `codex-img` keeps the untouched original whenever it changes pixels.
+
+**Reported, not requested.** In `--json`, `imageModel`, `quality`, `background` and `size` are what the backend reported in its response, not what `codex-img` asked for, and they aren't checked against the image. The exception is `size` after `--trim`, `--resize` or `--hard-alpha`: then it's measured from the saved file, and the backend's value moves to `rawSize`. `usage` is the token counts the backend reported.
+
+**Quota.** Every image uses your subscription's image quota. The endpoint doesn't say what a request costs or how much is left, so `codex-img` can't either. It only learns that the quota is used up from the error, and then exits with code `3`; `batch` stops starting new images. `batch --dry-run` lists what would be generated before any quota is spent.
+
 ## Notes
 
-- **Routes.** By default `codex-img` does what the Codex CLI does: it sends `{prompt, model: "gpt-image-2", size, quality, background}` to `/images/generations`, or to `/images/edits` with `images: [{image_url: "data:…"}]`. Your prompt reaches the image model unchanged. `--via-responses` uses the Responses API with the `image_generation` tool instead (ported from pi-codex-image-gen).
-- **Model.** The backend picks the image model and ignores the `model` field; the Codex CLI hardcodes `gpt-image-2` too. The Responses route reports it as `gpt-image-2-codex`. Whenever the backend upgrades what it serves (such as Images 2.5), both routes get the upgrade.
-- **What's honoured.** `size` is a hint: `1536x1024` has come back at 1536x1024 and also at 1370x1148, and square comes back around 1254x1254. Check `size` in the `--json` output, or add `--resize WxH --fit cover` to get exact pixels. `background: transparent` gives real alpha. `quality` is capped at medium on the subscription. The endpoint doesn't validate its inputs and ignores unknown values, so `codex-img` checks them before sending.
 - `codex-img` only reads `auth.json`. It never refreshes or writes tokens, so it can't interfere with your `codex` login. If the login has expired or gets rejected, it exits with code `2` and tells you to open Codex (the `codex` CLI or the app) so it renews the login, or to run `codex login`. `CODEX_HOME` overrides `~/.codex`.
-- The image model is chosen by the backend. It is currently `gpt-image-2-codex`, reported as `imageModel` in `--json`. `--model` only picks the routing model.
 - Debugging: `CODEX_IMG_DEBUG_RAW=/tmp/raw.txt codex-img …` saves the raw response body (the JSON, or the event stream with `--via-responses`). It contains the full base64 image.
-- Image generation uses your subscription's image quota.
 
 ## Credits
 
