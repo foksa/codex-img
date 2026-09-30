@@ -67,7 +67,7 @@ For a sky or backdrop that repeats side by side, run `codex-img tile sky.png -o 
 
 ### Many assets: `codex-img batch`
 
-For a set of assets, such as a game's art, keep them in a JSON spec and run `codex-img batch spec.json [key or folder...]` instead of scripting many calls. Each asset has a prompt, generation fields and `convert` options with underscores (`hard_alpha`, `max: [W, H]`). The spec also has a shared `style` appended to every prompt, `defaults`, and `reference` keys for edits of another asset's raw image. `batch` generates only missing raw images (delete one to re-roll it) and converts all of them, rewriting only files that changed. Run `--dry-run` first to see what would be generated, because that uses quota. `--convert-only` needs no login. See `codex-img batch --help` for the spec format.
+For a set of assets, such as a game's art, keep them in a JSON spec and run `codex-img batch spec.json [key or folder...]` instead of scripting many calls. Each asset has a prompt, generation fields and `convert` options with underscores (`hard_alpha`, `max: [W, H]`). The spec also has a shared `style` appended to every prompt, `defaults`, and `reference` keys for edits of another asset's raw image. `batch` generates only missing raw images (delete one to re-roll it) and converts all of them, rewriting only files that changed. Run `--dry-run` first to see what would be generated, because that uses quota. `--convert-only` needs no login. Each convert line reports the output's final size (`-> public/assets/tree.png (420x156, 18 KB)`, or `size` with `--json`), so read sizes and aspect ratios from there instead of opening every file. See `codex-img batch --help` for the spec format.
 
 ## Workflow
 
