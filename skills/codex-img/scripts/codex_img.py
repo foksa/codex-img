@@ -86,9 +86,10 @@ def is_size(value):
 
 
 def parse(args):
-    if args[:1] == ["convert"]:
-        raise Fail(USAGE, "`convert` needs the codex-img binary; the Python fallback can't convert images. "
-                          "Use other tools (sips, ImageMagick, Pillow), or quote a prompt that starts with \"convert\".")
+    # The binary's subcommands: refuse them rather than generate an image from "sheet a.png".
+    if args[:1] and args[0] in ("convert", "sheet", "batch", "tile"):
+        raise Fail(USAGE, f"`{args[0]}` needs the codex-img binary; the Python fallback only generates and edits images. "
+                          f"Install the binary, or quote a prompt that starts with \"{args[0]}\".")
     if args[:1] == ["status"] and all(a == "--json" for a in args[1:]):
         return {"command": "status", "json": len(args) > 1}
     names = {
