@@ -144,6 +144,24 @@ codex-img sheet sprites/*.png -o sheet.png --same-scale --cols 8 --force
 
 An input that can't be read is reported and left out, and the others are still laid out. Labels use a small built-in font that covers ASCII; other characters show as `?`.
 
+### Seamless panoramas
+
+`codex-img tile` makes a panorama wrap around, so it can repeat side by side without a mirror, for skies and backdrops in side-scrolling and racing games. Mirroring a tile shows every landmark twice; `tile` joins the image's own right edge to its left edge instead. It uses one image of quota.
+
+```sh
+codex-img tile sky.png -o sky-tile.png --preview /tmp/join.png
+codex-img tile sky.png -o sky-tile.png --prompt "a harbour town on a cliff, sailboats, big clouds"
+```
+
+How it works:
+
+1. The image is rolled by half its width, so the wrap seam moves to the centre.
+2. The model is asked to repaint a band there so the scenery continues across it. The Codex image endpoint ignores masks, so the whole image comes back redrawn, though only slightly outside that band.
+3. Only the band is taken from the edit. On each side it's cut along the path where the edit and the original agree best. The cut goes around anything the edit redrew in full, such as a mountain that was split at the edge and comes back whole.
+4. The spliced pixels are colour-matched to the original, and the image is rolled back.
+
+The result keeps the original's size and framing, every pixel outside the band is unchanged, and the repaired join sits at the left and right edges. `--preview` writes two copies side by side around the join, so the result can be checked in one image. `--keep-edit` keeps the model's full edit, and `--json` reports the repaired band's width.
+
 ### Asset batches
 
 `codex-img batch` builds a whole set of assets, a game's art for example, from one JSON spec. It generates each asset's raw image if it's missing (4 at a time), then converts every raw image into its published form. Raw images are never regenerated, so delete one to re-roll it. Converted files are rewritten only when their bytes change, so an unchanged asset stays unchanged in git.

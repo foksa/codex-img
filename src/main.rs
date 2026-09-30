@@ -6,6 +6,7 @@ mod convert;
 mod error;
 mod images;
 mod sheet;
+mod tile;
 mod transform;
 mod util;
 
@@ -55,6 +56,11 @@ fn run(args: &[String]) -> i32 {
             Ok(0)
         }
         Command::Batch(options) => batch::run(&options),
+        Command::TileHelp => {
+            println!("{}", tile::help());
+            Ok(0)
+        }
+        Command::Tile(options) => tile::run(&options),
         Command::Run(options) => generate(options),
     };
     result.unwrap_or_else(|error| {
