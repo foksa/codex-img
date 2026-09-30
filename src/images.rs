@@ -527,6 +527,21 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn quantizer_sees_colours_in_a_fixed_order() {
+        // exoquant's histogram was a HashMap, whose order changes with every map's random seed.
+        // k-means then summed colours in that order, and on real sprites the rounding was enough
+        // to pick another palette on each run. The vendored copy keeps it sorted.
+        let colours: Vec<exoquant::Color> = (0..2000u32).map(|i| exoquant::Color::new((i * 7) as u8, (i * 13) as u8, (i / 8) as u8, 255)).collect();
+        let order = |pixels: &mut dyn Iterator<Item = exoquant::Color>| -> Vec<[u8; 4]> {
+            let histogram: exoquant::Histogram = pixels.collect();
+            histogram.iter().map(|(c, _)| [c.r, c.g, c.b, c.a]).collect()
+        };
+        let forward = order(&mut colours.iter().copied());
+        assert_eq!(order(&mut colours.iter().rev().copied()), forward);
+        assert!(forward.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[test]
     fn optimizes_png_losslessly() {
         let png = gradient();
         let optimized = optimize_png(&png).unwrap();
