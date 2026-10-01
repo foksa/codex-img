@@ -259,6 +259,11 @@ pub fn needs_encoding(bytes: &[u8], actual: Format, wanted: Format, enc: &Encodi
     actual != wanted || !enc.is_satisfied_by(bytes, wanted)
 }
 
+/// Pixel size from the header alone, without decoding.
+pub fn dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_dimensions().ok()
+}
+
 /// Fully decode the image (header checks alone miss damaged pixel data).
 /// Animated input is refused: decoding keeps only the first frame, and nothing here can write
 /// animation back, so any conversion (even same-format) would silently drop the rest.

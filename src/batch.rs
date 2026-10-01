@@ -3,7 +3,7 @@
 //! form. Deleting a raw image is how an asset is re-rolled.
 use crate::auth::{self, Credentials};
 use crate::backend::{Backend, Request, Transport};
-use crate::cli;
+use crate::cli::{self, Aspect};
 use crate::convert;
 use crate::error::{Error, Kind, Result};
 use crate::images::{self, Encoding, Format, MAX_EDIT_IMAGES};
@@ -57,7 +57,7 @@ Spec:
     "style": "...",         appended to every prompt
     "defaults": {...},      fields every asset gets unless it sets them itself
     "assets": {
-      "trees/oak": {"prompt": "...", "size": "1536x1024", "max": "420x380"},
+      "trees/oak": {"prompt": "...", "aspect": "3:2", "max": "420x380"},
       "mill/sails": {"prompt": "Only the sails of this windmill", "reference": "mill/full"},
       "mill/full": {"prompt": "...", "publish": false}
     }
@@ -65,7 +65,8 @@ Spec:
 
 Asset fields (in an asset, null or false turns a default off):
   prompt                    Required
-  size, quality, background As the generation options -s, -q and -b
+  aspect, size, quality,    As the generation options -a, -s, -q and -b
+  background
   reference                 Key(s) whose raw image is passed as -i; generated first
   images                    Other -i files, relative to the spec
   publish                   false: generate only, e.g. a reference for other assets
@@ -134,6 +135,8 @@ struct Asset {
     /// With the spec's style appended.
     prompt: String,
     size: Option<String>,
+    /// Already applied to `prompt`; kept to check the result's shape.
+    aspect: Option<Aspect>,
     quality: Option<String>,
     background: Option<String>,
     /// Indices of the assets whose raw images are passed as references.
@@ -163,8 +166,8 @@ impl Spec {
 }
 
 const TOP_FIELDS: [&str; 5] = ["raw_dir", "out_dir", "style", "defaults", "assets"];
-const ASSET_FIELDS: [&str; 24] = [
-    "prompt", "size", "quality", "background", "reference", "images", "publish", "format", "colors", "dither", "output_quality", "lossless", "trim",
+const ASSET_FIELDS: [&str; 25] = [
+    "prompt", "size", "aspect", "quality", "background", "reference", "images", "publish", "format", "colors", "dither", "output_quality", "lossless", "trim",
     "hard_alpha", "resize", "max", "fit", "no_enlarge", "no_bleed", "key", "key_region", "key_cut", "key_spread", "trim_density",
 ];
 
@@ -300,12 +303,20 @@ fn parse_asset(key: &str, fields: &Fields, style: Option<&str>, keys: &[&str], b
         Some(style) => format!("{} {style}", prompt.trim_end()),
         None => prompt,
     };
-    if prompt.chars().count() > cli::MAX_PROMPT_CHARS {
-        return Err(Error::usage("the prompt (with the style) is longer than 32,000 characters."));
-    }
     let size = fields.string("size")?;
     if size.as_deref().is_some_and(|s| !cli::is_size(s)) {
         return Err(Error::usage("size must be WIDTHxHEIGHT or auto."));
+    }
+    let aspect = fields.string("aspect")?.map(|v| Aspect::parse(&v).map_err(|e| Error::usage(e.message.replace("--aspect", "aspect")))).transpose()?;
+    if aspect.is_some() && size.as_deref().is_some_and(|s| s != "auto") {
+        return Err(Error::usage("aspect and size can't be combined; the backend ignores size, and aspect sets the frame."));
+    }
+    let prompt = match aspect {
+        Some(aspect) => aspect.frame(&prompt),
+        None => prompt,
+    };
+    if prompt.chars().count() > cli::MAX_PROMPT_CHARS {
+        return Err(Error::usage("the prompt (with the style and aspect) is longer than 32,000 characters."));
     }
     let quality = cli::one_of("quality", fields.string("quality")?, &["low", "medium", "high", "auto"])?;
     let background = cli::one_of("background", fields.string("background")?, &["transparent", "opaque", "auto"])?;
@@ -365,7 +376,7 @@ fn parse_asset(key: &str, fields: &Fields, style: Option<&str>, keys: &[&str], b
         no_enlarge,
     };
     transform.check()?;
-    Ok(Asset { key: key.to_string(), prompt, size, quality, background, references, images, publish, format, encoding, transform })
+    Ok(Asset { key: key.to_string(), prompt, size, aspect, quality, background, references, images, publish, format, encoding, transform })
 }
 
 /// References must form no loop, or no asset in it could be generated first.
@@ -713,10 +724,15 @@ fn generate(spec: &Spec, plan: &[usize], jobs: usize, backend: &Backend, credent
         let asset = &spec.assets[plan[n]];
         let started = Instant::now();
         match generate_asset(spec, asset, backend, credentials, &session_id) {
-            Ok(raw) => {
+            Ok((raw, warning)) => {
                 let seconds = started.elapsed().as_secs_f64();
-                let info = json!({"rawPath": shown(&raw), "durationMs": (seconds * 1000.0) as u64});
-                report.line("generate", &asset.key, Status::Ok, &format!(" -> {} ({seconds:.1}s)", shown(&raw)), info);
+                let mut info = json!({"rawPath": shown(&raw), "durationMs": (seconds * 1000.0) as u64});
+                let mut detail = format!(" -> {} ({seconds:.1}s)", shown(&raw));
+                if let Some(warning) = warning {
+                    detail.push_str(&format!("; warning: {warning}"));
+                    info["warning"] = json!(warning);
+                }
+                report.line("generate", &asset.key, Status::Ok, &detail, info);
                 Ok(())
             }
             Err(error) => {
@@ -737,8 +753,9 @@ fn generate(spec: &Spec, plan: &[usize], jobs: usize, backend: &Backend, credent
     run_pool(plan.len(), &waits, jobs, &work, &skip);
 }
 
-/// Generate one raw image and save it, untouched, as `<raw_dir>/<key>.png`.
-fn generate_asset(spec: &Spec, asset: &Asset, backend: &Backend, credentials: &Credentials, session_id: &str) -> Result<PathBuf> {
+/// Generate one raw image and save it, untouched, as `<raw_dir>/<key>.png`. Also returns a
+/// warning when the image's shape is off the asset's `aspect`.
+fn generate_asset(spec: &Spec, asset: &Asset, backend: &Backend, credentials: &Credentials, session_id: &str) -> Result<(PathBuf, Option<String>)> {
     let mut paths: Vec<String> = asset.references.iter().map(|&r| spec.raw_path(&spec.assets[r]).display().to_string()).collect();
     paths.extend(asset.images.iter().map(|p| p.display().to_string()));
     let inputs = images::load_input_images(&paths)?;
@@ -754,14 +771,15 @@ fn generate_asset(spec: &Spec, asset: &Asset, backend: &Backend, credentials: &C
         session_id,
     };
     let image = backend.generate(&request, credentials, &|_| {})?;
+    let warning = asset.aspect.zip(images::dimensions(&image.bytes)).and_then(|(a, size)| a.mismatch(size));
     let raw = spec.raw_path(asset);
     if image.format == Format::Png {
         cli::write_output(&raw, &image.bytes, false)?;
-        return Ok(raw);
+        return Ok((raw, warning));
     }
     // The quota is spent: keep what came back under its real extension if it can't become PNG.
     match images::convert(&image.bytes, Format::Png, &Encoding::default()) {
-        Ok(png) => cli::write_output(&raw, &png, false).map(|_| raw),
+        Ok(png) => cli::write_output(&raw, &png, false).map(|_| (raw, warning)),
         Err(error) => {
             let kept = raw.with_extension(image.format.extension());
             cli::write_output(&kept, &image.bytes, false)?;
@@ -832,6 +850,9 @@ mod tests {
         .unwrap();
         let [oak, sky, boat, full, sails] = &s.assets[..] else { panic!() };
         assert_eq!(oak.prompt, "An oak. Pixel art.");
+        let framed = spec(json!({"style": "Pixel art.", "defaults": {"aspect": "3:2"}, "assets": {"a": {"prompt": "A."}, "b": {"prompt": "B.", "aspect": null}}})).unwrap();
+        assert_eq!(framed.assets[0].prompt, "The frame must be in 3:2 landscape format, wider than it is tall.\n\nA. Pixel art.");
+        assert_eq!((framed.assets[1].prompt.as_str(), framed.assets[1].aspect), ("B. Pixel art.", None));
         assert_eq!((oak.background.as_deref(), oak.encoding.colors, oak.transform.hard_alpha, oak.transform.trim), (Some("transparent"), Some(160), Some(16), Some(0)));
         assert_eq!((oak.transform.resize, oak.transform.no_enlarge), (Some(Resize { width: Some(420), height: Some(380) }), true));
         assert_eq!((sky.background.as_deref(), sky.format, sky.encoding.colors, sky.encoding.quality), (Some("opaque"), Format::Webp, None, Some(85)));
@@ -858,6 +879,8 @@ mod tests {
         assert!(spec_error(json!({"assets": {"../up": {"prompt": "x"}}})).contains("relative path"));
         assert!(spec_error(json!({"assets": {}, "defaults": {"prompt": "x"}})).contains("defaults can't"));
         assert!(spec_error(json!({"assets": {}, "extra": 1})).contains("unknown field \"extra\""));
+        assert!(asset(json!({"prompt": "x", "aspect": "5:1"})).contains("aspect must be between"));
+        assert!(asset(json!({"prompt": "x", "aspect": "2:3", "size": "1024x1536"})).contains("aspect and size"));
         let loop_spec = json!({"assets": {"a": {"prompt": "x", "reference": "b"}, "b": {"prompt": "y", "reference": "a"}}});
         assert!(spec_error(loop_spec).contains("loop: a -> b -> a"));
     }
@@ -1011,6 +1034,18 @@ mod tests {
         let outside = dir.join("art/../public/a.png");
         assert_eq!(shown(&outside), outside.display().to_string());
         assert_eq!(shown(Path::new("../public/a.png")), "../public/a.png");
+    }
+
+    #[test]
+    fn warns_when_the_frame_is_off_the_aspect() {
+        let (dir, spec) = temp_spec("batch-aspect", json!({"wide": {"prompt": "A.", "aspect": "16:9"}}));
+        let (backend, captured) = serve(vec![(200, "application/json", direct_response())]);
+        let (raw, warning) = generate_asset(&spec, &spec.assets[0], &backend, &creds(), "s").unwrap();
+        assert_eq!(raw, dir.join("raw/wide.png"));
+        assert_eq!(warning.as_deref(), Some("asked for 16:9 but the backend returned 1x1"), "the fake backend returns a 1x1 PNG");
+        let calls = captured.lock().unwrap();
+        assert!(calls[0].body["prompt"].as_str().unwrap().starts_with("The frame must be in 16:9"));
+        assert!(calls[0].body.get("size").is_none(), "aspect sends no size");
     }
 
     #[test]

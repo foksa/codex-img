@@ -119,6 +119,19 @@ class Test(unittest.TestCase):
         Server.responses = [(503, {}), self.ok()]
         self.assertEqual(self.run_cli("x", "-o", os.path.join(self.dir, "r.png"), "--quiet")[0], 0)
 
+    def test_aspect_leads_the_prompt_and_flags_a_wrong_frame(self):
+        square = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR" + (1).to_bytes(4, "big") * 2
+        Server.responses = [(200, {"data": [{"b64_json": base64.b64encode(square).decode()}]})]
+        code, _, stderr = self.run_cli("a fox", "-a", "2:3", "-o", os.path.join(self.dir, "a.png"), "--quiet")
+        self.assertEqual(code, 0)
+        self.assertEqual(Server.requests[0][2], {"prompt": "The frame must be in 2:3 portrait format, taller than it is wide.\n\na fox", "model": "gpt-image-2"})
+        self.assertIn("warning: asked for 2:3 but the backend returned 1x1", stderr)
+        self.assertEqual(ci.aspect_mismatch((16, 9), (1672, 941)), None)
+        self.assertTrue(ci.frame((1, 1), "x").startswith("The frame must be in 1:1 square format"))
+        for args in (["x", "-a", "16x9"], ["x", "-a", "4:1"], ["x", "-a", "2:3", "-s", "1024x1536"]):
+            self.assertEqual(self.run_cli(*args)[0], 64, args)
+        self.assertEqual(len(Server.requests), 1)
+
     def test_unsupported_options_fail_before_any_request(self):
         for args in (["convert", "a.png", "-o", "a.webp"], ["sheet", "a.png", "-o", "s.png"], ["batch", "art.json"], ["tile", "sky.png", "-o", "t.png"], ["x", "-f", "jpeg"], ["x", "-c", "64"], ["x", "--output-quality", "80"], ["x", "--via-responses"], ["x", "--trim=4"], ["x", "--resize", "400x"], ["x", "-o", "a.jpg"], ["x", "-s", "big"], []):
             self.assertEqual(self.run_cli(*args)[0], 64, args)

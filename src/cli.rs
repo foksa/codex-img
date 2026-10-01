@@ -63,8 +63,11 @@ Options:
                             --no-enlarge makes --resize only shrink
       --no-bleed            Keep the colour under fully transparent pixels (by
                             default PNG and lossless webp get the nearest edge colour)
-  -s, --size <WxH>          Shape hint, e.g. 1536x1024, 1024x1536, auto. For exact
-                            pixels add --resize WxH --fit cover
+  -a, --aspect <W:H>        Frame shape, 1:3 to 3:1 (16:9, 2:3, 1:1): leads the prompt
+                            with a sentence asking for it, and warns if the result
+                            is off. For exact pixels add --resize WxH --fit cover
+  -s, --size <WxH>          Sent to the backend, which has ignored it in tests; use
+                            --aspect for the shape
   -q, --quality <q>         low | medium | high | auto
   -b, --background <bg>     transparent | opaque | auto
       --via-responses       Fallback route: a routing model calls the image tool
@@ -92,6 +95,7 @@ pub struct Options {
     pub images: Vec<String>,
     pub format: Option<Format>,
     pub size: Option<String>,
+    pub aspect: Option<Aspect>,
     pub quality: Option<String>,
     pub background: Option<String>,
     /// Local encoding: palette, dithering, JPEG/WebP quality, lossless WebP.
@@ -133,6 +137,47 @@ pub fn is_size(value: &str) -> bool {
     value == "auto" || value.split_once('x').is_some_and(|(w, h)| valid(w) && valid(h))
 }
 
+/// A frame shape asked for in the prompt. The direct route ignores the `size` field, but keeps
+/// to a ratio stated at the start of the prompt, at about the same pixel count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Aspect {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Aspect {
+    /// Larger ratios came back clamped to 3:1, so they're refused before any quota is spent.
+    pub fn parse(value: &str) -> Result<Aspect> {
+        let side = |s: &str| s.parse::<u32>().ok().filter(|n| (1..=100).contains(n));
+        let (width, height) = value
+            .split_once(':')
+            .and_then(|(w, h)| Some((side(w)?, side(h)?)))
+            .ok_or_else(|| Error::usage("--aspect must be W:H, such as 16:9 or 2:3."))?;
+        if width > 3 * height || height > 3 * width {
+            return Err(Error::usage("--aspect must be between 1:3 and 3:1; the backend clamps anything wider or taller."));
+        }
+        Ok(Aspect { width, height })
+    }
+
+    /// `prompt`, led by the sentence that sets the frame.
+    pub fn frame(&self, prompt: &str) -> String {
+        let (w, h) = (self.width, self.height);
+        let shape = match w.cmp(&h) {
+            std::cmp::Ordering::Greater => "landscape format, wider than it is tall",
+            std::cmp::Ordering::Less => "portrait format, taller than it is wide",
+            std::cmp::Ordering::Equal => "square format, as wide as it is tall",
+        };
+        format!("The frame must be in {w}:{h} {shape}.\n\n{prompt}")
+    }
+
+    /// A warning when `size` is more than 2% off the ratio: wrong framing, not rounding.
+    pub fn mismatch(&self, (w, h): (u32, u32)) -> Option<String> {
+        let wanted = self.width as f64 / self.height as f64;
+        let got = w as f64 / h.max(1) as f64;
+        ((got / wanted - 1.0).abs() > 0.02).then(|| format!("asked for {}:{} but the backend returned {w}x{h}", self.width, self.height))
+    }
+}
+
 pub fn parse(args: &[String]) -> Result<Command> {
     if args.first().is_some_and(|a| a == "status") && args[1..].iter().all(|a| a == "--json") {
         return Ok(Command::Status { json: args.len() > 1 });
@@ -172,6 +217,7 @@ pub fn parse(args: &[String]) -> Result<Command> {
             "-i" | "--image" => "image",
             "-f" | "--format" => "format",
             "-s" | "--size" => "size",
+            "-a" | "--aspect" => "aspect",
             "-q" | "--quality" => "quality",
             "-b" | "--background" => "background",
             "-m" | "--model" => "model",
@@ -230,6 +276,10 @@ pub fn parse(args: &[String]) -> Result<Command> {
     if size.as_deref().is_some_and(|s| !is_size(s)) {
         return Err(Error::usage("--size must be WIDTHxHEIGHT or auto."));
     }
+    let aspect = last("aspect").map(|v| Aspect::parse(&v)).transpose()?;
+    if aspect.is_some() && size.as_deref().is_some_and(|s| s != "auto") {
+        return Err(Error::usage("--aspect and --size can't be combined; the backend ignores --size, and --aspect sets the frame."));
+    }
     let count = match last("count") {
         None => 1,
         Some(n) => n.parse::<usize>().ok().filter(|n| (1..=10).contains(n)).ok_or_else(|| Error::usage("--count must be an integer from 1 to 10."))?,
@@ -280,6 +330,7 @@ pub fn parse(args: &[String]) -> Result<Command> {
         images,
         format,
         size,
+        aspect,
         quality: one_of("quality", last("quality"), &["low", "medium", "high", "auto"])?,
         background: one_of("background", last("background"), &["transparent", "opaque", "auto"])?,
         encoding,
@@ -668,6 +719,25 @@ mod tests {
         let o = run(&["--via-responses", "-m", "gpt-6-sol", "x"]);
         assert!(o.via_responses);
         assert_eq!(o.model.as_deref(), Some("gpt-6-sol"));
+    }
+
+    #[test]
+    fn aspect_leads_the_prompt_and_flags_a_wrong_frame() {
+        assert_eq!(run(&["-a", "16:9", "x"]).aspect, Some(Aspect { width: 16, height: 9 }));
+        assert_eq!(run(&["--aspect=2:3", "-s", "auto", "x"]).aspect, Some(Aspect { width: 2, height: 3 }));
+        assert!(usage_error(&["--aspect", "16x9", "x"]).contains("W:H"));
+        assert!(usage_error(&["--aspect", "0:1", "x"]).contains("W:H"));
+        assert!(usage_error(&["--aspect", "4:1", "x"]).contains("1:3 and 3:1"));
+        assert!(usage_error(&["-a", "2:3", "-s", "1024x1536", "x"]).contains("can't be combined"));
+        let frame = |w, h| Aspect { width: w, height: h }.frame("A fox.");
+        assert_eq!(frame(2, 3), "The frame must be in 2:3 portrait format, taller than it is wide.\n\nA fox.");
+        assert!(frame(16, 9).starts_with("The frame must be in 16:9 landscape format, wider than it is tall."));
+        assert!(frame(1, 1).starts_with("The frame must be in 1:1 square format"));
+        // What the backend returned in tests is within 2%; a wrong frame isn't.
+        let mismatch = |w, h, size| Aspect { width: w, height: h }.mismatch(size);
+        assert_eq!((mismatch(2, 3, (1024, 1536)), mismatch(16, 9, (1672, 941)), mismatch(3, 1, (2172, 724))), (None, None, None));
+        assert_eq!(mismatch(2, 3, (941, 1672)).unwrap(), "asked for 2:3 but the backend returned 941x1672");
+        assert!(mismatch(1, 1, (1312, 1199)).is_some());
     }
 
     #[test]

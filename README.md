@@ -49,7 +49,7 @@ When the binary isn't installed, the skill falls back to `skills/codex-img/scrip
 ```sh
 codex-img "a red fox in snow, flat vector"                  # -> ./codex-img-<time>-<id>.png
 codex-img "app icon, paper plane" -o icon.webp
-codex-img "wide landscape of a lighthouse" --size 1536x1024
+codex-img "a lighthouse on a cliff at dusk" -a 16:9               # frame shape, see below
 codex-img "make it night with aurora" -i fox.png -o fox-night.jpg
 codex-img "sticker of a cat" --background transparent -n 4 -o stickers/
 codex-img "flat app icon, paper plane" -c 64 -o icon.png          # palette PNG, ~10-70x smaller
@@ -67,7 +67,8 @@ codex-img status --json                                     # login check, uses 
 | `--lossless` | Lossless `webp` with every pixel kept exactly. Much bigger than lossy |
 | `-c, --colors` | Quantize PNG output to a palette of 2–256 colours, like pngquant. Transparency is kept. Best for flat art: a 969 KB icon came out at 13 KB with 64 colours |
 | `--dither` | Dither while quantizing. Smooths gradients and photos, but makes files larger |
-| `-s, --size` | `WxH` or `auto` |
+| `-a, --aspect` | `W:H` from 1:3 to 3:1, such as `16:9`, `2:3` or `1:1`. Starts the prompt with "The frame must be in 16:9 landscape format, wider than it is tall.", which is what sets the shape (see [the backend](#the-backend)), and warns on stderr if the image comes back more than 2% off. Can't be combined with `--size`. For exact pixels, add `--resize WxH --fit cover` |
+| `-s, --size` | `WxH` or `auto`. Sent as the request's `size`, which the backend has ignored in tests; use `--aspect` |
 | `-q, --quality` | `low` \| `medium` \| `high` \| `auto` |
 | `-b, --background` | `transparent` \| `opaque` \| `auto` |
 | `--via-responses` | Fallback route: a routing model calls the `image_generation` tool through the Responses API. The prompt may be rewritten and `--size` is ignored |
@@ -188,13 +189,13 @@ The result keeps the original's size and framing, every pixel outside the band i
   "style": "16-bit arcade pixel art, bold saturated colours, clean dark outlines, no text.",
   "defaults": {"background": "transparent", "hard_alpha": true, "colors": 160, "trim": true},
   "assets": {
-    "trees/oak": {"prompt": "A single big old oak tree.", "size": "1536x1024", "max": [420, 380]},
-    "harbor/boat": {"prompt": "A fishing boat, side view.", "size": "1536x1024", "max": [420, 300],
+    "trees/oak": {"prompt": "A single big old oak tree.", "aspect": "3:2", "max": [420, 380]},
+    "harbor/boat": {"prompt": "A fishing boat, side view.", "aspect": "3:2", "max": [420, 300],
                     "key": "auto", "key_region": "bottom:30%", "key_cut": true, "trim_density": 0.15},
-    "harbor/sky": {"prompt": "A wide harbour sky panorama.", "size": "1536x1024", "background": "opaque",
+    "harbor/sky": {"prompt": "A wide harbour sky panorama.", "aspect": "3:1", "background": "opaque",
                    "format": "webp", "hard_alpha": false, "colors": null, "trim": false, "output_quality": 85},
-    "mill/full": {"prompt": "A windmill.", "size": "1024x1536", "publish": false},
-    "mill/sails": {"prompt": "Edit this image: only the four sails, hub centred.", "size": "1024x1024",
+    "mill/full": {"prompt": "A windmill.", "aspect": "2:3", "publish": false},
+    "mill/sails": {"prompt": "Edit this image: only the four sails, hub centred.", "aspect": "1:1",
                    "reference": "mill/full", "max": [400, 400]}
   }
 }
@@ -210,7 +211,7 @@ codex-img batch art/assets.json --convert-only     # no login, no quota
 - **Keys** are paths: the raw image goes to `<raw_dir>/<key>.png` and the output to `<out_dir>/<key>.<format>`. Both directories are relative to the spec file, and default to `raw` and `out`.
 - **`style`** is appended to every prompt. One shared style sentence keeps a large set looking like one game.
 - **`defaults`** apply to every asset. An asset overrides them, and `null` or `false` turns one off, like the sky above.
-- **Generation fields:** `prompt`, `size`, `quality`, `background`, `reference` (other keys whose raw images are passed as `-i`; they're generated first) and `images` (other `-i` files). `publish: false` generates an asset without converting it, for references.
+- **Generation fields:** `prompt`, `aspect`, `size`, `quality`, `background`, `reference` (other keys whose raw images are passed as `-i`; they're generated first) and `images` (other `-i` files). `aspect` leads the prompt, ahead of the `style`, and a frame more than 2% off it is reported as a warning on the asset's line. `publish: false` generates an asset without converting it, for references.
 - **Conversion fields** are the `convert` options with underscores: `format`, `colors`, `dither`, `output_quality`, `lossless`, `trim`, `hard_alpha`, `resize`, `fit`, `no_enlarge`, `no_bleed`, `key`, `key_region`, `key_spread`, `key_cut` and `trim_density`. `max: [W, H]` is short for `resize` with `no_enlarge`.
 - **Validation:** the whole spec is checked before anything runs. An unknown field, a missing reference or a reference loop is an error that names the asset.
 - **Output:** one line per asset and step (`ok`, `skip`, `same`, `FAILED`), or one JSON object each with `--json`. After a login or quota error, no more images are started. The exit code is the worst failure's, so a run with any failure exits non-zero.
@@ -218,19 +219,20 @@ codex-img batch art/assets.json --convert-only     # no login, no quota
 
 ## The backend
 
-The Codex image endpoint isn't a public API, and nothing about its behaviour is documented. This section separates what codex-img controls from what has been observed in use (as of September 2026). The observations can change whenever the backend does, without a codex-img release.
+The Codex image endpoint isn't a public API, and nothing about its behaviour is documented. This section separates what codex-img controls from what has been observed in use (as of September and October 2026). The observations can change whenever the backend does, without a codex-img release.
 
 **What codex-img controls**
 
-- **The request.** By default `codex-img` does what the Codex CLI does: it sends `{prompt, model: "gpt-image-2", size, quality, background}` to `/images/generations`, or to `/images/edits` with `images: [{image_url: "data:…"}]`. Your prompt reaches the image model unchanged. `--via-responses` uses the Responses API with the `image_generation` tool instead (ported from pi-codex-image-gen), where a routing model may rewrite the prompt.
+- **The request.** By default `codex-img` does what the Codex CLI does: it sends `{prompt, model: "gpt-image-2", size, quality, background}` to `/images/generations`, or to `/images/edits` with `images: [{image_url: "data:…"}]`. Your prompt reaches the image model unchanged, apart from the one framing sentence `--aspect` puts in front of it. `--via-responses` uses the Responses API with the `image_generation` tool instead (ported from pi-codex-image-gen), where a routing model may rewrite the prompt.
 - **Input checks.** The endpoint doesn't validate its inputs and ignores values it doesn't know, so `codex-img` checks every option before sending anything, and checks that the output file is free before spending quota.
 - **Everything after the image arrives:** conversion, trimming, resizing, palettes, background removal, and never overwriting a file. This runs locally, is covered by tests, and doesn't depend on the backend.
 
 **What has been observed, not guaranteed**
 
 - **Model.** On the direct route, `codex-img` sends `model: "gpt-image-2"`, as the Codex CLI does, and the response doesn't say which model made the image. The Responses route has reported `gpt-image-2-codex`. Which model serves each route, and whether that changes, isn't known. `--model` only picks the routing model for `--via-responses`.
-- **Size** is a hint: `1536x1024` has come back at 1536x1024 and also at 1370x1148, and square comes back around 1254x1254. Add `--resize WxH --fit cover` to get exact pixels.
-- **Quality** is capped at medium on the subscription.
+- **Shape comes from the prompt, not `size`.** In October 2026 tests, the same prompt with `size: 1024x1536` and with `size: 1536x1024` both came back at 1312x1199. Leading the prompt with a ratio sentence (what `--aspect` does) gave that ratio every time, on generations and on edits: an edit of a 2:3 image with `-a 16:9` came back 16:9, with the scene widened around the subject. The pixel count stays around 1.57 megapixels, so 2:3 came back at exactly 1024x1536 and 16:9 at 1672x941. Other tools have reported 3:4 at 1086x1448, 9:16 at 941x1672, 21:9 at 1916x821, and anything beyond 3:1 clamped to 3:1. Without `--aspect`, shape words in the prompt ("wide landscape") steer it too, less precisely. Add `--resize WxH --fit cover` to get exact pixels.
+- **Quality** is capped at medium on the subscription. Prompts led by a ratio sentence came back reported as `low`, with fewer image tokens (343 for 2:3 and 301 for 16:9, against 829 without it), even with `-q medium`; the images still looked fully detailed. Why isn't known.
+- **The `model` field isn't checked.** Sending `gpt-image-2.5-sunburst` instead of `gpt-image-2` was accepted without an error, and gave the same size, quality and token count, so there's no sign it picked another model.
 - **Transparency.** `background: transparent` gives real alpha, but "solid" pixels come back at alpha 250–254 (`--hard-alpha` fixes that), and the model sometimes paints a background anyway (`--key` removes it).
 - **Masks** are accepted and ignored: requests with and without one used the same number of input tokens. `tile` works around this.
 - **No seed.** An image can't be generated again exactly, which is why `codex-img` keeps the untouched original whenever it changes pixels.

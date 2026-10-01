@@ -42,7 +42,7 @@ Avoid: <what must not appear>
 - If a missing detail would make the result unusable (the exact text, which image is the edit target), ask. Otherwise proceed.
 
 ## Composition
-- Name the framing and viewpoint (close-up, wide, top-down, eye level) when it matters.
+- Set the shape with `-a W:H` rather than in your own words; it adds a sentence that the backend follows reliably. Name the framing and viewpoint (close-up, wide, top-down, eye level) when it matters.
 - If the image needs room for headline copy or UI, ask for usable negative space. Don't pick a side (left/right) unless the layout around it calls for one.
 - For people, say how much of the body is in frame and what they look at or hold: "full body visible", "looking down at the book", "hands gripping the handlebars".
 
@@ -109,9 +109,9 @@ of field, 50mm lens. Label on the mug reads "DAWN" in a thin sans-serif, white,
 centered, verbatim with no extra text.
 ```
 
-**Landing page hero** (labeled lines)
+**Landing page hero** (labeled lines, `-a 16:9`)
 ```
-Asset type: landing page hero background, wide landscape
+Asset type: landing page hero background
 Primary request: minimal abstract background with a soft gradient and subtle paper texture
 Style/medium: matte, softly rendered abstract illustration
 Composition/framing: wide, with calm usable negative space for a headline
@@ -119,9 +119,9 @@ Color palette: restrained warm neutrals
 Avoid: text, logos, focal objects
 ```
 
-**Slide**
+**Slide** (`-a 16:9`)
 ```
-Asset type: pitch-deck slide, 16:9 landscape
+Asset type: pitch-deck slide
 Primary request: one slide titled "Market Opportunity"
 Subject: TAM/SAM/SOM concentric circles, plus a small bar chart of growth from 2022 to 2026
 Style/medium: clean modern slide, white background, crisp sans-serif type
