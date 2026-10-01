@@ -1191,7 +1191,7 @@ mod tests {
             assert_eq!(calls[1].body["images"].as_array().unwrap().len(), 4, "the base's raw image, then ink, captain and layout");
         }
         let note = manifest::read(&manifest::path_for(&dir.join("raw/hero.png"))).unwrap();
-        assert_eq!((note["userPrompt"].as_str(), note["inputs"][0]["path"].as_str()), (Some("The captain waves."), Some(shown(&dir.join("raw/base.png")).as_str())));
+        assert_eq!((note["userPrompt"].as_str(), note["inputs"][0]["path"].as_str()), (Some("The captain waves."), Some(shown(&dir.join("raw").join("base.png")).as_str())));
         assert_eq!(note["presets"][2], json!({"kind": "character", "name": "captain", "source": "spec"}));
         assert!(!spec.changed(hero));
         let edited = parse_spec(&spec_value("The captain salutes."), &dir, &files).unwrap();
