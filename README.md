@@ -72,6 +72,7 @@ codex-img status --json                                     # login check, uses 
 | `--view` | Camera preset: `side`, `front`, `top-down`, `three-quarter`, `isometric`, or one of your own. See [Presets](#presets-and-reference-roles) |
 | `--style`, `--character` | Named style and character presets (repeatable): their text goes into the prompt, their images are sent as labelled references |
 | `--style-ref`, `--character-ref`, `--composition-ref` | Reference images with a role (repeatable). They're sent after the `-i` images, max 5 images in all, and each gets a line in the prompt saying how to use it |
+| `--palette`, `--palette-clean` | Limit the image to a palette: hex codes, a `.gpl`/`.hex` file, a swatch image, or a palette preset (14 built in, such as `pico-8`, `nes` or `resurrect-64`, or your own). See [Palettes](#palettes) |
 | `--manifest` | Also writes `<image>.json`: the prompt sent, presets, inputs (with fingerprints) and what the backend reported |
 | `-q, --quality` | `low` \| `medium` \| `high` \| `auto` |
 | `-b, --background` | `transparent` \| `opaque` \| `auto` |
@@ -128,7 +129,7 @@ codex-img presets                                                   # what's def
 1. a batch spec's own `views`, `styles` and `characters`
 2. the project: the nearest `codex-img.json` in the current folder or one above it
 3. global: `$XDG_CONFIG_HOME/codex-img/presets.json`, else `~/.config/codex-img/presets.json`
-4. the built-in views
+4. built in: the views, and the palettes listed under [Palettes](#palettes)
 
 Preset files are only read when a preset is named, so a broken one can't stop a plain run. `codex-img presets` lists every preset with its source, and marks the ones another layer hides.
 
@@ -151,7 +152,55 @@ A string is short for `{"text": ...}`, and ref paths are relative to the file. E
 
 Give a character or style only the text that defines it. The text goes into every prompt that uses it, so a pose or "isolated on a transparent background" would end up in every scene too (see [the backend](#the-backend)).
 
-**The Python fallback** has the built-in views and the `--*-ref` options, but not named styles, characters or your own views.
+**The Python fallback** has the built-in views and the `--*-ref` options, but not named styles, characters, palettes or your own views.
+
+### Palettes
+
+```sh
+codex-img "a treasure chest sprite" --palette '#2B1D14,#6B3E26,#C7743A,#F2C14E,#F7EBD0,#3B6E5A' -b transparent -o chest.png
+codex-img "a treasure chest sprite" --palette game-boy -b transparent --trim --resize 400x -o chest.png
+codex-img convert old-art/*.png --palette pico-8 --palette-clean -o snapped/      # art made without it
+codex-img presets add palette harbour --from lospec-swatch.png                    # or --text '#... #...'
+```
+
+`--palette` does two things:
+- **On generation,** it adds the hex codes to the prompt ("Use only these 6 colours, exactly, and no others: #2B1D14, …").
+- **After generation, and in `convert`,** it snaps every colour to the nearest palette colour, so the file has exactly those colours:
+  - Alpha is hardened at 127 unless `--hard-alpha` says otherwise.
+  - Stray pixels are cleaned at full size.
+  - Colours are snapped again after `--resize`, which blends neighbours.
+  - PNG output is a palette PNG. WebP needs `--lossless`, and JPEG and `-c` are refused.
+
+The untouched original is kept as `<name>.raw.png`.
+
+A palette can be:
+- hex codes (commas or spaces, `#` optional)
+- a GIMP `.gpl` file
+- a `.hex` text file (as Lospec exports it)
+- a swatch image (its distinct colours)
+- the name of a palette preset: a built-in one (below), or one under `"palettes"` in `codex-img.json`, global presets or a batch spec
+
+| Built-in palette | Colours | |
+|---|---|---|
+| `pico-8` | 16 | PICO-8 fantasy console |
+| `game-boy` | 4 | original Game Boy greens (`#0F380F` to `#9BBC0F`) |
+| `nes` | 55 | NES, as Lospec lists it (NES palettes differ by emulator) |
+| `c64` | 16 | Commodore 64, as Lospec lists it (one of several measured versions) |
+| `zx-spectrum` | 15 | ZX Spectrum, normal and bright |
+| `cga` | 4 | CGA palette 1, high intensity: black, magenta, cyan, white |
+| `ega` | 16 | EGA's default 16 colours (the RGBI set, with brown `#AA5500`) |
+| `ega-64` | 64 | every colour EGA could show (2 bits per channel) |
+| `sweetie-16` | 16 | by GrafxKid |
+| `dawnbringer-16`, `dawnbringer-32` | 16, 32 | by DawnBringer |
+| `endesga-32` | 32 | by ENDESGA |
+| `resurrect-64` | 64 | by Kerrie Lake |
+| `aap-64` | 64 | by Adigun A. Polack |
+
+The values come from [Lospec](https://lospec.com/palette-list). Each can be overridden by defining a palette of the same name. There's no Game Boy Color palette, because that console had no fixed one.
+
+In a batch spec, use the `palette` and `palette_clean` fields.
+
+`--palette-clean` is for art that wasn't generated with the palette. It reduces the image to 32 colours, matches hue before lightness, then despeckles. Without it, shading that falls between palette colours flickers between them as speckles and streaks of another hue. It changes images that were prompted with the palette more than it needs to (pixel art especially), so it's off by default.
 
 ### Converting existing images
 
@@ -271,6 +320,7 @@ codex-img batch art/assets.json --convert-only     # no login, no quota
 - **Keys** are paths: the raw image goes to `<raw_dir>/<key>.png` and the output to `<out_dir>/<key>.<format>`. Both directories are relative to the spec file, and default to `raw` and `out`.
 - **`style`** is appended to every prompt. One shared style sentence keeps a large set looking like one game.
 - **`defaults`** apply to every asset. An asset overrides them, and `null` or `false` turns one off, like the sky above.
+- **Palettes:** `palette` (hex codes as a string or a list, a file relative to the spec, or a palette preset) and `palette_clean`. The hex codes join the prompt when the raw image is generated, and the conversion snaps to them.
 - **Presets:** `view`, `style` and `character` name presets, as the options of the same names do; `style` and `character` can be lists. `style_ref`, `character_ref` and `composition_ref` are reference images with a role, relative to the spec. The spec can define its own presets under top-level `views`, `styles` and `characters`, which win over the project's and global ones. The top-level `style` is still plain text appended to every prompt; an asset's `style` names a preset.
 - **Manifests:** each generated raw image gets `<key>.png.json` beside it, with the prompt sent, the presets, the inputs with fingerprints, and what the backend reported. When the spec or an input has changed since, the asset's `skip` line says so (`changed: true` with `--json`). The asset is never regenerated on its own, because that would spend quota; delete the raw image to re-roll it.
 - **Generation fields:** `prompt`, `aspect`, `size`, `quality`, `background`, `reference` (other keys whose raw images are passed as `-i`; they're generated first) and `images` (other `-i` files). `aspect` leads the prompt, ahead of the `style`, and a frame more than 2% off it is reported as a warning on the asset's line. `publish: false` generates an asset without converting it, for references.
@@ -299,6 +349,7 @@ The Codex image endpoint isn't a public API, and nothing about its behaviour is 
 - **Views** (built-in camera presets, October 2026, flat-coloured game sprites of a cottage, a street lamp, a car and a tree). `side`, `front`, `isometric` and `top-down` came out as asked for the car and the tree, and `side`/`front` gave flat elevations for the cottage and the lamp. A building seen `top-down` still showed a sliver of its front wall. The first wording of `three-quarter` turned the cottage 45° (isometric-looking), and the first `top-down` gave a front view with a big roof; the built-in texts now say "front square to the camera, not turned" and "like a map: for a building, only its roof", which fixed both.
 - **Reference images become part of the scene.** Any input image goes to `/images/edits`, so the result takes that image's frame (a 2:3 style reference gave a 2:3 result; `-a` overrides it). A style reference photo of an apple on a table gave a fox on that same table: describe the new setting in the prompt. In two A/B pairs, the role labels made no visible difference next to a plain `-i`; they're there so several images can't be confused.
 - **Character text leaks into scenes.** A character preset whose text was a whole sprite prompt ("isolated on a transparent background, standing") gave scenes that faded to transparent at the edges. With only the character's looks as text, the same scenes filled the frame and the character kept its face, outfit and colours.
+- **Palettes.** Treasure-chest sprites, October 2026. Hex codes in the prompt put 81–88% of pixels within distance 16 (RGB) of a palette colour and 97–99% within 40, yet every image still had 9,000–14,000 distinct colours. A palette's name alone ("PICO-8") gave 8% within 16, and "a limited palette of 8 colours" changed nothing. A swatch image as a style reference didn't beat the hex codes. Listing PICO-8's colours, or naming it, made the model switch to pixel art by itself. Snapping in OKLab after the prompt changed little visibly (0.1–1% stray pixels before the despeckle). Snapping an image generated without the palette gave purple streaks in brown wood, which `--palette-clean` turns into the palette's neutral grey. With 64 colours (Resurrect 64, AAP-64), the prompt mattered less: 33–49% of pixels within 16 (as many distinct colours as with no palette), though the design still took the palette's greys and purples. Because a 64-colour palette covers most shades, the plain snap looked right even on an image generated without it.
 - **Masks** are accepted and ignored: requests with and without one used the same number of input tokens. `tile` works around this.
 - **No seed.** An image can't be generated again exactly, which is why `codex-img` keeps the untouched original whenever it changes pixels.
 

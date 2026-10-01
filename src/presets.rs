@@ -10,23 +10,25 @@ use std::path::{Path, PathBuf};
 
 pub const PROJECT_FILE: &str = "codex-img.json";
 const GLOBAL_FILE: &str = "presets.json";
-const BUILT_IN: &str = include_str!("../skills/codex-img/scripts/views.json");
+const BUILT_IN: &str = include_str!("../skills/codex-img/scripts/presets.json");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     View,
     Style,
     Character,
+    Palette,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 3] = [Kind::View, Kind::Style, Kind::Character];
+    pub const ALL: [Kind; 4] = [Kind::View, Kind::Style, Kind::Character, Kind::Palette];
 
     pub fn name(self) -> &'static str {
         match self {
             Kind::View => "view",
             Kind::Style => "style",
             Kind::Character => "character",
+            Kind::Palette => "palette",
         }
     }
 
@@ -36,6 +38,7 @@ impl Kind {
             Kind::View => "views",
             Kind::Style => "styles",
             Kind::Character => "characters",
+            Kind::Palette => "palettes",
         }
     }
 
@@ -43,7 +46,7 @@ impl Kind {
         Kind::ALL
             .into_iter()
             .find(|k| k.name() == value || k.key() == value)
-            .ok_or_else(|| Error::usage(format!("Unknown preset kind \"{value}\"; use view, style or character.")))
+            .ok_or_else(|| Error::usage(format!("Unknown preset kind \"{value}\"; use view, style, character or palette.")))
     }
 }
 
@@ -86,8 +89,8 @@ pub struct Library {
 
 impl Library {
     pub fn builtin() -> Library {
-        let value: Value = serde_json::from_str(BUILT_IN).expect("views.json is valid JSON");
-        Library { presets: parse_presets(value.as_object().expect("views.json is an object"), Path::new(""), Source::BuiltIn, None).expect("views.json is valid") }
+        let value: Value = serde_json::from_str(BUILT_IN).expect("presets.json is valid JSON");
+        Library { presets: parse_presets(value.as_object().expect("presets.json is an object"), Path::new(""), Source::BuiltIn, None).expect("presets.json is valid") }
     }
 
     /// The layers that exist: a batch spec's own presets, then the project and global files.
@@ -142,7 +145,7 @@ fn read_file(file: &Path) -> Result<Map<String, Value>> {
 fn parse_presets(object: &Map<String, Value>, base: &Path, source: Source, file: Option<&Path>) -> Result<Vec<Preset>> {
     if source != Source::Spec {
         if let Some(field) = object.keys().find(|k| !Kind::ALL.iter().any(|kind| kind.key() == k.as_str())) {
-            return Err(Error::usage(format!("unknown field \"{field}\"; a preset file has views, styles and characters.")));
+            return Err(Error::usage(format!("unknown field \"{field}\"; a preset file has views, styles, characters and palettes.")));
         }
     }
     let mut presets = Vec::new();
@@ -162,6 +165,10 @@ fn parse_presets(object: &Map<String, Value>, base: &Path, source: Source, file:
 fn parse_entry(kind: Kind, entry: &Value) -> Result<(Option<String>, Vec<String>)> {
     let (text, refs) = match entry {
         Value::String(text) => (Some(text.clone()), Vec::new()),
+        Value::Array(colors) if kind == Kind::Palette => {
+            let wrong = || Error::usage("a palette's colours must be strings like \"#2B1D14\".");
+            (Some(colors.iter().map(|c| c.as_str().ok_or_else(wrong)).collect::<Result<Vec<_>>>()?.join(" ")), Vec::new())
+        }
         Value::Object(fields) => {
             if let Some(field) = fields.keys().find(|k| !["text", "refs"].contains(&k.as_str())) {
                 return Err(Error::usage(format!("unknown field \"{field}\"; a preset has text and refs.")));
@@ -185,6 +192,12 @@ fn parse_entry(kind: Kind, entry: &Value) -> Result<(Option<String>, Vec<String>
     let text = text.filter(|t| !t.trim().is_empty());
     if kind == Kind::View && !refs.is_empty() {
         return Err(Error::usage("a view is text only; use a composition reference for an example image."));
+    }
+    if kind == Kind::Palette {
+        if !refs.is_empty() {
+            return Err(Error::usage("a palette is a list of colours; `presets add palette --from swatch.png` reads them from an image."));
+        }
+        crate::palette::parse_list(text.as_deref().unwrap_or_default())?;
     }
     if text.is_none() && refs.is_empty() {
         return Err(Error::usage("needs text, refs or both."));
@@ -228,6 +241,8 @@ pub struct Setup {
     pub style_refs: Vec<PathBuf>,
     pub character_refs: Vec<PathBuf>,
     pub composition_refs: Vec<PathBuf>,
+    /// Resolved colours; their hex codes end the prompt.
+    pub palette: Option<Vec<crate::palette::Rgb>>,
 }
 
 impl Setup {
@@ -325,6 +340,9 @@ pub fn compose(prompt: &str, style: Option<&str>, setup: &Setup, library: &Libra
     for text in styles.iter().filter_map(|s| s.text.as_deref()).chain(style) {
         body = format!("{body} {text}");
     }
+    if let Some(colors) = &setup.palette {
+        body = format!("{body} {}", crate::palette::sentence(colors));
+    }
     blocks.push(body);
     Ok(Composed { prompt: blocks.join("\n\n"), images, used })
 }
@@ -343,7 +361,7 @@ fn label(n: usize, image: &RoleImage) -> String {
 // --- The `presets` subcommand ---
 
 pub fn help() -> &'static str {
-    r#"Usage:
+    r##"Usage:
   codex-img presets [--json]                        List every view, style and character
   codex-img presets show <kind> <name> [--json]     One preset: text, refs and where it's defined
   codex-img presets add <kind> <name> [--text <t>] [--ref <image>]... [--from <image>]
@@ -351,30 +369,34 @@ pub fn help() -> &'static str {
   codex-img presets remove <kind> <name> [--global]
   codex-img presets promote <kind> <name> [--force] Copy a project preset to the global file
 
-<kind> is view, style or character. Uses no quota.
+<kind> is view, style, character or palette. Uses no quota.
 
-Presets are used with --view, --style and --character (and the batch fields of the
-same names). The first of these that defines a name wins:
-  a batch spec's own "views", "styles" and "characters"
+Presets are used with --view, --style, --character and --palette (and the batch fields
+of the same names). The first of these that defines a name wins:
+  a batch spec's own "views", "styles", "characters" and "palettes"
   the project: the nearest codex-img.json in this folder or one above it
   global: $XDG_CONFIG_HOME/codex-img/presets.json (else ~/.config/codex-img/)
-  built in: the views side, front, top-down, three-quarter and isometric
+  built in: the views side, front, top-down, three-quarter and isometric, and the
+  palettes pico-8, game-boy, nes, c64, zx-spectrum, cga, ega, ega-64, sweetie-16, dawnbringer-16,
+  dawnbringer-32, endesga-32, resurrect-64 and aap-64
 
 add writes to the project's codex-img.json (created here if there's none), or with
 --global to the global file. A view is text only; a style or character can have up to
 5 reference images. A --ref inside the project is stored as a path relative to
 codex-img.json; one outside it is copied to presets/<kind>/<name>/ beside it. Global
 refs are always copied, to refs/<kind>/<name>/ in the global folder.
---from <image> is the same as --ref <image>. Give --text only what defines the
+--from <image> is the same as --ref <image>, except for a palette: its colours are
+read from the swatch image (or .gpl/.hex file). Give --text only what defines the
 preset (a character's look, not a pose or background): the text is added to every
-prompt that uses it.
+prompt that uses it. A palette's text is its hex codes.
 
 File format (a string is short for {"text": ...}; refs are relative to the file):
   {
     "views": {"roadside": "seen straight on from the side at eye level, ..."},
     "styles": {"harbor": {"text": "16-bit pixel art, ...", "refs": ["refs/boat.png"]}},
-    "characters": {"captain": {"text": "a stocky walrus sailor", "refs": ["captain.png"]}}
-  }"#
+    "characters": {"captain": {"text": "a stocky walrus sailor", "refs": ["captain.png"]}},
+    "palettes": {"harbour": "#2B1D14 #6B3E26 #C7743A #F2C14E #F7EBD0 #3B6E5A"}
+  }"##
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -525,7 +547,15 @@ fn execute(opts: &PresetsOptions, places: &Places) -> Result<i32> {
             if let Some(from) = from {
                 refs.insert(0, PathBuf::from(from));
             }
-            let text = text.clone();
+            let mut text = text.clone();
+            // A palette keeps its colours, not the image they came from.
+            if *kind == Kind::Palette && !refs.is_empty() {
+                if text.is_some() || refs.len() > 1 {
+                    return Err(Error::usage("A palette comes from --text or one swatch image (--from), not both."));
+                }
+                let colors = crate::palette::from_file(&refs.remove(0))?;
+                text = Some(colors.iter().map(|&c| crate::palette::hex(c)).collect::<Vec<_>>().join(" "));
+            }
             let file = if *global { places.global_file()? } else { places.project().unwrap_or_else(|| places.cwd.join(PROJECT_FILE)) };
             let stored = add(&file, *kind, name, text, &refs, *global, *force)?;
             report(opts.json, "added", *kind, name, &file, &stored);
@@ -769,6 +799,9 @@ mod tests {
         assert_eq!(paths, [Path::new("/art/pixel.png"), Path::new("/art/captain.png"), Path::new("layout.png")]);
         assert_eq!(composed.used, [(Kind::View, "side".into(), Source::BuiltIn), (Kind::Style, "pixel".into(), Source::Spec), (Kind::Character, "captain".into(), Source::Spec)]);
 
+        let colors = Setup { palette: Some(vec![[0, 0, 0], [255, 255, 255]]), ..Setup::default() };
+        assert!(compose("A fox.", Some("Ink."), &colors, &library, 0).unwrap().prompt.ends_with("A fox. Ink. Use only these 2 colours, exactly, and no others: #000000, #FFFFFF. No gradients, no colours in between."));
+
         // Nothing asked for: the prompt is untouched.
         assert_eq!(compose("A fox.", None, &Setup::default(), &Library::builtin(), 0).unwrap().prompt, "A fox.");
         let many = Setup { style_refs: vec![PathBuf::from("s.png"); 3], ..Setup::default() };
@@ -789,7 +822,7 @@ mod tests {
         assert_eq!(parse(&args(&["--help"])).unwrap(), None);
         let usage = |list: &[&str]| parse(&args(list)).unwrap_err().message;
         assert!(usage(&["add", "style", "x"]).contains("--text, --ref or --from"));
-        assert!(usage(&["add", "colour", "x", "--text", "y"]).contains("view, style or character"));
+        assert!(usage(&["add", "colour", "x", "--text", "y"]).contains("view, style, character or palette"));
         assert!(usage(&["show", "style"]).contains("<kind> <name>"));
         assert!(usage(&["rename"]).contains("Unknown presets command"));
         assert!(usage(&["list", "extra"]).contains("Unexpected"));
@@ -840,5 +873,19 @@ mod tests {
         assert_eq!(Value::Object(file)["characters"]["cap"], json!({"refs": ["art/raw/captain.png"]}));
         assert!(run(&["add", "view", "v", "--ref", project_dir.join("art/raw/captain.png").to_str().unwrap()]).unwrap_err().message.contains("text only"));
         assert!(run(&["add", "style", "s", "--ref", "missing.png"]).unwrap_err().message.contains("missing.png"));
+
+        // A palette keeps the swatch's colours as hex codes, not the image.
+        let mut swatch = image::RgbaImage::from_pixel(2, 1, image::Rgba([0x2B, 0x1D, 0x14, 255]));
+        swatch.put_pixel(1, 0, image::Rgba([0xF2, 0xC1, 0x4E, 255]));
+        swatch.save(dir.join("downloads/swatch.png")).unwrap();
+        run(&["add", "palette", "warm", "--from", dir.join("downloads/swatch.png").to_str().unwrap()]).unwrap();
+        assert_eq!(Value::Object(read_file(&project_dir.join(PROJECT_FILE)).unwrap())["palettes"]["warm"], json!("#2B1D14 #F2C14E"));
+        assert!(run(&["add", "palette", "bad", "--text", "#2B1D14"]).unwrap_err().message.contains("2 to 255"));
+        assert_eq!(places.library().unwrap().get(Kind::Palette, "game-boy").unwrap().source, Source::BuiltIn);
+        // Every built-in palette parses, with its own colour count.
+        let builtin = Library::builtin();
+        let sizes: Vec<(String, usize)> = builtin.listing().into_iter().filter(|(p, _)| p.kind == Kind::Palette).map(|(p, _)| (p.name.clone(), crate::palette::parse_list(p.text.as_deref().unwrap()).unwrap().len())).collect();
+        let expected = [("pico-8", 16), ("game-boy", 4), ("nes", 55), ("c64", 16), ("zx-spectrum", 15), ("cga", 4), ("ega", 16), ("ega-64", 64), ("sweetie-16", 16), ("dawnbringer-16", 16), ("dawnbringer-32", 32), ("endesga-32", 32), ("resurrect-64", 64), ("aap-64", 64)];
+        assert_eq!(sizes, expected.map(|(n, c)| (n.to_string(), c)));
     }
 }

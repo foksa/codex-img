@@ -2,6 +2,7 @@
 //! content, resize with premultiplied alpha, and edge bleed under fully transparent pixels.
 use crate::error::{Error, Result};
 use crate::images::{Encoding, Format};
+use crate::palette;
 use image::{imageops, ImageBuffer, Rgba, RgbaImage};
 
 pub const MAX_SIDE: u32 = 8192;
@@ -407,6 +408,15 @@ pub struct Transform {
     pub no_bleed: bool,
     /// Never scale up: --resize only shrinks, and leaves smaller images at their size.
     pub no_enlarge: bool,
+    /// Snap every colour to this palette (and harden alpha), so the output has exactly its colours.
+    pub palette: Option<PaletteFit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaletteFit {
+    pub colors: Vec<palette::Rgb>,
+    /// For images not generated with the palette: reduce, match hue first, despeckle.
+    pub clean: bool,
 }
 
 pub struct Applied {
@@ -437,13 +447,39 @@ impl Transform {
     /// Whether this edits visible pixels (key, trim, resize or hard alpha was asked for), as
     /// opposed to only the colour under transparent ones.
     pub fn edits(&self) -> bool {
-        self.trim.is_some() || self.resize.is_some() || self.hard_alpha.is_some() || !self.keys.is_empty()
+        self.trim.is_some() || self.resize.is_some() || self.hard_alpha.is_some() || !self.keys.is_empty() || self.palette.is_some()
+    }
+
+    /// A palette needs output that keeps exact colours: PNG (written as a palette PNG) or
+    /// lossless WebP, and it replaces -c.
+    pub fn check_output(&self, format: Option<Format>, enc: &Encoding) -> Result<()> {
+        if self.palette.is_none() {
+            return Ok(());
+        }
+        if enc.colors.is_some() {
+            return Err(Error::usage("--colors and --palette can't be combined; the palette sets the colours."));
+        }
+        match format {
+            Some(Format::Jpeg) => Err(Error::usage("--palette needs PNG or lossless WebP output; JPEG changes the colours.")),
+            Some(Format::Webp) if !enc.lossless => Err(Error::usage("--palette needs PNG or lossless WebP output; add --lossless.")),
+            _ => Ok(()),
+        }
+    }
+
+    /// The encoding to write with: a palette makes PNG output a palette PNG of exactly its colours.
+    pub fn encoding(&self, format: Format, enc: &Encoding) -> Encoding {
+        match &self.palette {
+            Some(_) if format == Format::Png => Encoding { colors: Some(256), ..*enc },
+            _ => *enc,
+        }
     }
 
     pub fn apply(&self, mut rgba: RgbaImage, format: Format, enc: &Encoding) -> Result<Applied> {
         let mut changed = false;
         let mut trim = None;
-        if let Some(threshold) = self.hard_alpha {
+        // A palette has no half-transparent colours, so its edges are hardened too.
+        let hard_alpha = self.hard_alpha.or(self.palette.as_ref().map(|_| palette::PALETTE_ALPHA));
+        if let Some(threshold) = hard_alpha {
             changed |= harden_alpha(&mut rgba, threshold);
         }
         if let Some(bounds) = visible_bounds(&rgba).filter(|_| !self.keys.is_empty()) {
@@ -455,6 +491,11 @@ impl Transform {
                 changed |= key_cut(&mut rgba, &keys, region, bounds, percent);
             }
             changed |= key_out(&mut rgba, &keys, &band, self.key_spread);
+        }
+        // At full size, where despeckling only removes noise; resizing comes after.
+        if let Some(fit) = &self.palette {
+            palette::snap(&mut rgba, &fit.colors, fit.clean);
+            changed = true;
         }
         if let Some(padding) = self.trim {
             let mut rect = visible_bounds(&rgba).ok_or_else(|| Error::other("--trim: the image has no visible pixels."))?;
@@ -479,10 +520,15 @@ impl Transform {
             if let Some(resized) = resize(&rgba, size, self.fit.unwrap_or(Fit::Inside), self.no_enlarge) {
                 rgba = resized;
                 changed = true;
-                if self.hard_alpha.is_some() {
+                if hard_alpha.is_some() {
                     harden_alpha(&mut rgba, RESAMPLED_HARD_ALPHA);
                 }
             }
+        }
+        // Last: resizing blends neighbouring colours, which are snapped back into the palette.
+        if let Some(fit) = &self.palette {
+            palette::snap_exact(&mut rgba, &fit.colors);
+            return Ok(Applied { image: rgba, changed: true, trim });
         }
         if !self.no_bleed && bleeds(format, enc) {
             changed |= bleed(&mut rgba);
@@ -1218,6 +1264,35 @@ mod tests {
             let [r, g, b, _] = pixel.0;
             assert!(r > 200 && g < 60 && b < 50, "dark hidden colour leaked into the edge: {:?}", pixel.0);
         }
+    }
+
+    #[test]
+    fn a_palette_leaves_exactly_its_colours_even_after_resizing() {
+        let palette = vec![[0, 0, 0], [255, 255, 255], [200, 40, 40]];
+        // A soft-edged red disc with grey shading on a transparent background.
+        let image = RgbaImage::from_fn(40, 40, |x, y| {
+            let d = ((x as f32 - 20.0).powi(2) + (y as f32 - 20.0).powi(2)).sqrt();
+            let alpha = (255.0 * (16.0 - d).clamp(0.0, 1.0)) as u8;
+            if x < 20 { Rgba([190, 60, 50, alpha]) } else { Rgba([120, 120, 120, alpha]) }
+        });
+        let fit = Transform { palette: Some(PaletteFit { colors: palette.clone(), clean: false }), resize: Some(Resize::parse("13x").unwrap()), ..Default::default() };
+        let applied = apply(fit.clone(), image.clone());
+        assert!(applied.changed && fit.edits());
+        let allowed = |p: &Rgba<u8>| p.0 == [0; 4] || palette.iter().any(|c| p.0 == [c[0], c[1], c[2], 255]);
+        assert!(applied.image.pixels().all(allowed), "resized edges were snapped back, alpha hardened");
+        let clean = Transform { palette: Some(PaletteFit { colors: palette.clone(), clean: true }), ..Default::default() };
+        assert!(apply(clean, image).image.pixels().all(allowed));
+
+        // Written as a palette PNG of exactly those colours; formats that change colours are refused.
+        let enc = fit.encoding(Format::Png, &Encoding::default());
+        let png = crate::images::encode(&applied.image, Format::Png, &enc).unwrap();
+        let info = png::Decoder::new(std::io::Cursor::new(png)).read_info().unwrap().info().clone();
+        assert_eq!(info.color_type, png::ColorType::Indexed);
+        assert!(info.palette.unwrap().len() / 3 <= 4);
+        assert!(fit.check_output(Some(Format::Jpeg), &Encoding::default()).unwrap_err().message.contains("JPEG"));
+        assert!(fit.check_output(Some(Format::Webp), &Encoding::default()).unwrap_err().message.contains("--lossless"));
+        assert!(fit.check_output(Some(Format::Webp), &Encoding { lossless: true, ..Default::default() }).is_ok());
+        assert!(fit.check_output(Some(Format::Png), &Encoding { colors: Some(8), ..Default::default() }).unwrap_err().message.contains("--colors"));
     }
 
     #[test]

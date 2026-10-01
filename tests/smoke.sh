@@ -40,7 +40,13 @@ JSON
 
 # presets: built-in views, then a project preset; global presets go to a folder of our own.
 export XDG_CONFIG_HOME="$work/config"
-"$bin" presets --json | grep -q '"name":"isometric","source":"built-in"' || fail "presets: no built-in isometric view"
+"$bin" presets --json > presets.json
+grep -q '"name":"isometric","source":"built-in"' presets.json || fail "presets: no built-in isometric view"
+grep -q '"name":"pico-8","source":"built-in"' presets.json || fail "presets: no built-in pico-8 palette"
+
+# convert --palette: a palette PNG with only the palette's colours.
+"$bin" convert "$fixture" --palette game-boy --trim -o paletted.png --json > palette.json
+[ -s paletted.png ] || fail "convert --palette wrote nothing"
 "$bin" presets add style smoke --text "flat colours" --ref "$fixture" > /dev/null
 [ -s presets/styles/smoke/1-sprite.png ] || fail "presets add didn't copy a ref from outside the project"
 "$bin" presets promote style smoke > /dev/null

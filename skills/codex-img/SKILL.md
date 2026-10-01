@@ -53,6 +53,12 @@ EOF
 - **A reference with a role, without a preset:** use `--style-ref`, `--character-ref` or `--composition-ref <image>` instead of `-i`. Each is labelled in the prompt for you, after the `-i` images, with at most 5 images in all.
   - Any reference image sets the frame (pass `-a` for another shape).
   - Its setting tends to carry over, so describe the new background.
+- **Palettes:** when the user names colours or a palette for a game or brand, pass `--palette` instead of writing the colours into the prompt.
+  - It takes hex codes (`'#2B1D14,#6B3E26,...'`), a `.gpl`/`.hex` file, a swatch image, or a preset: built in are `pico-8`, `game-boy`, `nes`, `c64`, `zx-spectrum`, `cga`, `ega`, `ega-64`, `sweetie-16`, `dawnbringer-16`, `dawnbringer-32`, `endesga-32`, `resurrect-64` and `aap-64`, plus the project's own (`codex-img presets`).
+  - It adds the hex codes to the prompt, then snaps every colour to the palette, so the PNG has exactly those colours. The original is kept as `.raw.png`.
+  - Never name a palette in the prompt without its hex codes: the model doesn't know them.
+  - For existing art that wasn't made with the palette, use `codex-img convert <file> --palette <p> --palette-clean`.
+  - PNG or `--lossless` WebP only; not with `-c`.
 - **`--json` shows `submittedPrompt`,** the full prompt that was sent. Check it when a result surprises you.
 - **`--manifest`** writes `<image>.json` with that prompt, the presets and the inputs. `batch` always writes one beside each raw image, and its `skip` line says when the spec has changed since; delete the raw image to re-roll it.
 
@@ -118,7 +124,7 @@ python3 <skill-dir>/scripts/codex_img.py "<prompt>" -o <path>.png --json
 Its limits:
 - **PNG only.** It refuses `-f`, and any `-o` extension other than `.png`, before spending quota. If the user wants JPEG or WebP, or exact pixel dimensions, generate a PNG and then convert or resize it yourself (`sips`, ImageMagick, Pillow).
 - **No `-c`/`--dither` quantization, no `--output-quality`/`--lossless`, no `convert` subcommand (so no trim, resize or edge bleed), and no `--via-responses` or `--model`.**
-- **Presets:** only the built-in `--view`s and the `--*-ref` options; no `--style`, `--character`, project views, `presets` or `--manifest`.
+- **Presets:** only the built-in `--view`s and the `--*-ref` options; no `--style`, `--character`, project views, `presets`, `--palette` or `--manifest`.
 
 If `python3` is missing as well, tell the user rather than trying another image service. They can install the binary from the project's releases page.
 

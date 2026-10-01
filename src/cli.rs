@@ -84,6 +84,14 @@ Options:
                             Composition reference: layout and framing only
                             (each repeatable; they follow -i, max {MAX_EDIT_IMAGES} images in all,
                             and each is labelled in the prompt)
+      --palette <colours>   Limit the image to a palette: '#2B1D14,#6B3E26,...', a
+                            .gpl/.hex file, a swatch image, or a palette preset
+                            (pico-8, nes, c64, sweetie-16, ...; `codex-img presets`
+                            lists them, and your own). The hex codes are added to
+                            the prompt, and every colour is snapped to the nearest
+                            one afterwards (alpha hardened, written as a palette PNG)
+      --palette-clean       Stronger cleanup for art not made with the palette:
+                            fewer stray pixels, colours matched by hue first
       --manifest            Also write <image>.json: the prompt sent, presets, inputs
                             and what the backend reported
   -q, --quality <q>         low | medium | high | auto
@@ -116,6 +124,9 @@ pub struct Options {
     /// Aspect, presets and reference roles, which `presets::compose` turns into the sent prompt.
     pub setup: Setup,
     pub manifest: bool,
+    /// --palette as given; `main` resolves it (a name may need the preset files).
+    pub palette: Option<String>,
+    pub palette_clean: bool,
     pub quality: Option<String>,
     pub background: Option<String>,
     /// Local encoding: palette, dithering, JPEG/WebP quality, lossless WebP.
@@ -272,12 +283,14 @@ pub fn parse(args: &[String]) -> Result<Command> {
             "--character-ref" => "character-ref",
             "--composition-ref" => "composition-ref",
             "--manifest" => "manifest",
+            "--palette" => "palette",
+            "--palette-clean" => "palette-clean",
             "-h" | "--help" => "help",
             "-v" | "--version" => "version",
             _ => return Err(Error::usage(format!("Unknown option: {arg}"))),
         };
         // --trim and --hard-alpha take values only inline (--trim=8): a bare word after them is the prompt.
-        if matches!(key, "json" | "quiet" | "via-responses" | "dither" | "lossless" | "no-bleed" | "no-enlarge" | "manifest" | "help" | "version")
+        if matches!(key, "json" | "quiet" | "via-responses" | "dither" | "lossless" | "no-bleed" | "no-enlarge" | "manifest" | "palette-clean" | "help" | "version")
             || (matches!(key, "trim" | "hard-alpha" | "key-cut") && inline.is_none())
         {
             flags.push(key);
@@ -345,6 +358,7 @@ pub fn parse(args: &[String]) -> Result<Command> {
         fit: last("fit").map(|v| transform::Fit::parse(&v)).transpose()?,
         no_bleed: flags.contains(&"no-bleed"),
         no_enlarge: flags.contains(&"no-enlarge"),
+        palette: None,
     };
     transform.check()?;
     let via_responses = flags.contains(&"via-responses");
@@ -356,6 +370,9 @@ pub fn parse(args: &[String]) -> Result<Command> {
     if images.len() > MAX_EDIT_IMAGES {
         return Err(Error::usage(format!("At most {MAX_EDIT_IMAGES} --image references are supported.")));
     }
+    if flags.contains(&"palette-clean") && last("palette").is_none() {
+        return Err(Error::usage("--palette-clean only applies with --palette."));
+    }
     let all = |key: &str| values.iter().filter(|(k, _)| *k == key).map(|(_, v)| v.clone()).collect::<Vec<_>>();
     let paths = |key: &str| all(key).into_iter().map(PathBuf::from).collect::<Vec<_>>();
     let setup = Setup {
@@ -366,6 +383,7 @@ pub fn parse(args: &[String]) -> Result<Command> {
         style_refs: paths("style-ref"),
         character_refs: paths("character-ref"),
         composition_refs: paths("composition-ref"),
+        palette: None,
     };
     Ok(Command::Run(Box::new(Options {
         prompt: positionals.join(" "),
@@ -375,6 +393,8 @@ pub fn parse(args: &[String]) -> Result<Command> {
         size,
         setup,
         manifest: flags.contains(&"manifest"),
+        palette: last("palette"),
+        palette_clean: flags.contains(&"palette-clean"),
         quality: one_of("quality", last("quality"), &["low", "medium", "high", "auto"])?,
         background: one_of("background", last("background"), &["transparent", "opaque", "auto"])?,
         encoding,
@@ -481,6 +501,7 @@ struct Processed {
 /// `lenient` is for generated images: if they don't decode and nothing asked to reshape them, they
 /// go through `encode_output` untouched rather than failing.
 fn process(bytes: &[u8], actual: Format, wanted: Format, enc: &images::Encoding, transform: &transform::Transform, lenient: bool) -> Result<Processed> {
+    let enc = &transform.encoding(wanted, enc);
     let rgba = match images::decode(bytes) {
         Ok(rgba) => rgba,
         Err(_) if lenient && !transform.edits() => {
@@ -788,9 +809,13 @@ mod tests {
                 style_refs: paths(&["s.png"]),
                 character_refs: paths(&["c.png"]),
                 composition_refs: paths(&["l.png"]),
+                palette: None,
             }
         );
         assert!(o.manifest && o.prompt == "x", "--manifest takes no value");
+        let o = run(&["--palette", "#000000,#FFFFFF", "--palette-clean", "x"]);
+        assert_eq!((o.palette.as_deref(), o.palette_clean, o.prompt.as_str()), (Some("#000000,#FFFFFF"), true, "x"));
+        assert!(usage_error(&["--palette-clean", "x"]).contains("--palette"));
         let sentence = |w, h| Aspect { width: w, height: h }.sentence();
         assert_eq!(sentence(2, 3), "The frame must be in 2:3 portrait format, taller than it is wide.");
         assert_eq!(sentence(16, 9), "The frame must be in 16:9 landscape format, wider than it is tall.");

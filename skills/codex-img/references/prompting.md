@@ -81,6 +81,7 @@ Avoid: <what must not appear>
 
   Why it matters: "front view at a slight angle" or "standing on a dock" gives a visible top surface, which in a low-camera game looks like the ground sloping up behind the object. `side` and `front` ask for a flat elevation with no top surface and a straight bottom edge. Still say "no platform, no dock, no ground" for things that usually stand on something. Boats and docks tend to come with painted sea anyway; remove it with `convert --key auto` (see SKILL.md). If none of these fit, define the project's own view once: `codex-img presets add view <name> --text "..."`.
 - **Tileable texture:** "seamless tileable texture, no focal point, even lighting". Check it by placing copies side by side. For a panorama that must wrap left to right, use `codex-img tile` instead.
+- **A fixed palette:** pass it with `--palette` rather than in your own words. It sends the hex codes, which the model follows closely (a palette's name alone, like "PICO-8", it doesn't know), and then snaps the colours exactly. Keep other colour words in the prompt consistent with the palette (no "red gem" with a palette that has no red).
 - **A set of assets:** append one shared style sentence to every prompt (palette, pixel size or rendering, outline, lighting). That kept 80+ sprites of one game consistent without a style reference image. Review the set with `codex-img sheet`.
 - **The same character in a new scene:**
   1. Make one clean anchor image of the character.
