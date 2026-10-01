@@ -1,6 +1,7 @@
 use crate::backend::{Generated, DEFAULT_ROUTING_MODEL};
 use crate::error::{Error, Result};
 use crate::images::{self, Format, MAX_EDIT_IMAGES};
+use crate::presets::Setup;
 use crate::transform;
 use crate::util;
 use serde_json::{json, Map, Value};
@@ -30,6 +31,9 @@ Usage:
   codex-img tile <panorama> -o tile.png
                               Make a panorama wrap around seamlessly (one image of
                               quota); see `codex-img tile --help`
+  codex-img presets [add|show|remove|promote ...]
+                              List or manage view, style and character presets (no
+                              quota); see `codex-img presets --help`
 
 Options:
   -o, --output <path>       Output file or directory (default: current directory)
@@ -68,6 +72,20 @@ Options:
                             is off. For exact pixels add --resize WxH --fit cover
   -s, --size <WxH>          Sent to the backend, which has ignored it in tests; use
                             --aspect for the shape
+      --view <name>         Camera preset: side, front, top-down, three-quarter,
+                            isometric, or one of your own (`codex-img presets`)
+      --style <name>        Style preset: its text ends the prompt, its refs are sent
+                            as style references (repeatable)
+      --character <name>    Character preset: its text and identity refs (repeatable)
+      --style-ref <image>   Style reference: palette and rendering, not the subject
+      --character-ref <image>
+                            Character reference: the same character, new pose/scene
+      --composition-ref <image>
+                            Composition reference: layout and framing only
+                            (each repeatable; they follow -i, max {MAX_EDIT_IMAGES} images in all,
+                            and each is labelled in the prompt)
+      --manifest            Also write <image>.json: the prompt sent, presets, inputs
+                            and what the backend reported
   -q, --quality <q>         low | medium | high | auto
   -b, --background <bg>     transparent | opaque | auto
       --via-responses       Fallback route: a routing model calls the image tool
@@ -95,7 +113,9 @@ pub struct Options {
     pub images: Vec<String>,
     pub format: Option<Format>,
     pub size: Option<String>,
-    pub aspect: Option<Aspect>,
+    /// Aspect, presets and reference roles, which `presets::compose` turns into the sent prompt.
+    pub setup: Setup,
+    pub manifest: bool,
     pub quality: Option<String>,
     pub background: Option<String>,
     /// Local encoding: palette, dithering, JPEG/WebP quality, lossless WebP.
@@ -122,7 +142,9 @@ pub enum Command {
     BatchHelp,
     Tile(crate::tile::TileOptions),
     TileHelp,
-    Run(Options),
+    Presets(crate::presets::PresetsOptions),
+    PresetsHelp,
+    Run(Box<Options>),
 }
 
 pub fn one_of(name: &str, value: Option<String>, allowed: &[&str]) -> Result<Option<String>> {
@@ -159,15 +181,15 @@ impl Aspect {
         Ok(Aspect { width, height })
     }
 
-    /// `prompt`, led by the sentence that sets the frame.
-    pub fn frame(&self, prompt: &str) -> String {
+    /// The sentence that sets the frame; `presets::compose` puts it first.
+    pub fn sentence(&self) -> String {
         let (w, h) = (self.width, self.height);
         let shape = match w.cmp(&h) {
             std::cmp::Ordering::Greater => "landscape format, wider than it is tall",
             std::cmp::Ordering::Less => "portrait format, taller than it is wide",
             std::cmp::Ordering::Equal => "square format, as wide as it is tall",
         };
-        format!("The frame must be in {w}:{h} {shape}.\n\n{prompt}")
+        format!("The frame must be in {w}:{h} {shape}.")
     }
 
     /// A warning when `size` is more than 2% off the ratio: wrong framing, not rounding.
@@ -194,6 +216,9 @@ pub fn parse(args: &[String]) -> Result<Command> {
     }
     if args.first().is_some_and(|a| a == "tile") {
         return Ok(crate::tile::parse(&args[1..])?.map_or(Command::TileHelp, Command::Tile));
+    }
+    if args.first().is_some_and(|a| a == "presets") {
+        return Ok(crate::presets::parse(&args[1..])?.map_or(Command::PresetsHelp, Command::Presets));
     }
     let mut values: Vec<(&'static str, String)> = Vec::new();
     let mut flags: Vec<&'static str> = Vec::new();
@@ -240,12 +265,19 @@ pub fn parse(args: &[String]) -> Result<Command> {
             "--trim-density" => "trim-density",
             "--key-cut" => "key-cut",
             "--key-spread" => "key-spread",
+            "--view" => "view",
+            "--style" => "style",
+            "--character" => "character",
+            "--style-ref" => "style-ref",
+            "--character-ref" => "character-ref",
+            "--composition-ref" => "composition-ref",
+            "--manifest" => "manifest",
             "-h" | "--help" => "help",
             "-v" | "--version" => "version",
             _ => return Err(Error::usage(format!("Unknown option: {arg}"))),
         };
         // --trim and --hard-alpha take values only inline (--trim=8): a bare word after them is the prompt.
-        if matches!(key, "json" | "quiet" | "via-responses" | "dither" | "lossless" | "no-bleed" | "no-enlarge" | "help" | "version")
+        if matches!(key, "json" | "quiet" | "via-responses" | "dither" | "lossless" | "no-bleed" | "no-enlarge" | "manifest" | "help" | "version")
             || (matches!(key, "trim" | "hard-alpha" | "key-cut") && inline.is_none())
         {
             flags.push(key);
@@ -324,13 +356,25 @@ pub fn parse(args: &[String]) -> Result<Command> {
     if images.len() > MAX_EDIT_IMAGES {
         return Err(Error::usage(format!("At most {MAX_EDIT_IMAGES} --image references are supported.")));
     }
-    Ok(Command::Run(Options {
+    let all = |key: &str| values.iter().filter(|(k, _)| *k == key).map(|(_, v)| v.clone()).collect::<Vec<_>>();
+    let paths = |key: &str| all(key).into_iter().map(PathBuf::from).collect::<Vec<_>>();
+    let setup = Setup {
+        aspect,
+        view: last("view"),
+        styles: all("style"),
+        characters: all("character"),
+        style_refs: paths("style-ref"),
+        character_refs: paths("character-ref"),
+        composition_refs: paths("composition-ref"),
+    };
+    Ok(Command::Run(Box::new(Options {
         prompt: positionals.join(" "),
         output,
         images,
         format,
         size,
-        aspect,
+        setup,
+        manifest: flags.contains(&"manifest"),
         quality: one_of("quality", last("quality"), &["low", "medium", "high", "auto"])?,
         background: one_of("background", last("background"), &["transparent", "opaque", "auto"])?,
         encoding,
@@ -340,7 +384,7 @@ pub fn parse(args: &[String]) -> Result<Command> {
         count,
         json: flags.contains(&"json"),
         quiet: flags.contains(&"quiet"),
-    }))
+    })))
 }
 
 fn sanitize_id(id: &str) -> String {
@@ -370,7 +414,7 @@ pub fn output_path(output: Option<&str>, format: Format, id: &str, index: usize,
 /// names (with `-N` suffixes, and the kept original when `transform` edits pixels) must be free,
 /// and its folder creatable. A folder `-o` is created here too; names made up in it are unique.
 /// `save_image` still refuses to overwrite a file that appears while the request runs.
-pub fn check_output(output: Option<&str>, format: Format, count: usize, transform: &transform::Transform) -> Result<()> {
+pub fn check_output(output: Option<&str>, format: Format, count: usize, transform: &transform::Transform, manifest: bool) -> Result<()> {
     let Some(output) = output else { return Ok(()) };
     let path = std::env::current_dir().unwrap_or_default().join(output);
     if output.ends_with('/') || path.is_dir() {
@@ -383,6 +427,9 @@ pub fn check_output(output: Option<&str>, format: Format, count: usize, transfor
             // The original keeps the backend's format, which is PNG unless asked for otherwise.
             targets.push(raw_path(&target, Format::Png));
             targets.push(raw_path(&target, format));
+        }
+        if manifest {
+            targets.push(crate::manifest::path_for(&target));
         }
         // symlink_metadata, so a dangling link counts as taken too: creating the file would fail.
         if let Some(taken) = targets.iter().find(|p| p.symlink_metadata().is_ok()) {
@@ -649,7 +696,7 @@ mod tests {
 
     fn run(list: &[&str]) -> Options {
         match parse(&args(list)).unwrap() {
-            Command::Run(options) => options,
+            Command::Run(options) => *options,
             other => panic!("expected run, got {other:?}"),
         }
     }
@@ -723,16 +770,31 @@ mod tests {
 
     #[test]
     fn aspect_leads_the_prompt_and_flags_a_wrong_frame() {
-        assert_eq!(run(&["-a", "16:9", "x"]).aspect, Some(Aspect { width: 16, height: 9 }));
-        assert_eq!(run(&["--aspect=2:3", "-s", "auto", "x"]).aspect, Some(Aspect { width: 2, height: 3 }));
+        assert_eq!(run(&["-a", "16:9", "x"]).setup.aspect, Some(Aspect { width: 16, height: 9 }));
+        assert_eq!(run(&["--aspect=2:3", "-s", "auto", "x"]).setup.aspect, Some(Aspect { width: 2, height: 3 }));
         assert!(usage_error(&["--aspect", "16x9", "x"]).contains("W:H"));
         assert!(usage_error(&["--aspect", "0:1", "x"]).contains("W:H"));
         assert!(usage_error(&["--aspect", "4:1", "x"]).contains("1:3 and 3:1"));
         assert!(usage_error(&["-a", "2:3", "-s", "1024x1536", "x"]).contains("can't be combined"));
-        let frame = |w, h| Aspect { width: w, height: h }.frame("A fox.");
-        assert_eq!(frame(2, 3), "The frame must be in 2:3 portrait format, taller than it is wide.\n\nA fox.");
-        assert!(frame(16, 9).starts_with("The frame must be in 16:9 landscape format, wider than it is tall."));
-        assert!(frame(1, 1).starts_with("The frame must be in 1:1 square format"));
+        let o = run(&["--view", "side", "--style", "pixel", "--style=ink", "--character", "cap", "--style-ref", "s.png", "--character-ref", "c.png", "--composition-ref", "l.png", "--manifest", "x"]);
+        let paths = |list: &[&str]| list.iter().map(PathBuf::from).collect::<Vec<_>>();
+        assert_eq!(
+            o.setup,
+            Setup {
+                aspect: None,
+                view: Some("side".into()),
+                styles: vec!["pixel".into(), "ink".into()],
+                characters: vec!["cap".into()],
+                style_refs: paths(&["s.png"]),
+                character_refs: paths(&["c.png"]),
+                composition_refs: paths(&["l.png"]),
+            }
+        );
+        assert!(o.manifest && o.prompt == "x", "--manifest takes no value");
+        let sentence = |w, h| Aspect { width: w, height: h }.sentence();
+        assert_eq!(sentence(2, 3), "The frame must be in 2:3 portrait format, taller than it is wide.");
+        assert_eq!(sentence(16, 9), "The frame must be in 16:9 landscape format, wider than it is tall.");
+        assert_eq!(sentence(1, 1), "The frame must be in 1:1 square format, as wide as it is tall.");
         // What the backend returned in tests is within 2%; a wrong frame isn't.
         let mismatch = |w, h, size| Aspect { width: w, height: h }.mismatch(size);
         assert_eq!((mismatch(2, 3, (1024, 1536)), mismatch(16, 9, (1672, 941)), mismatch(3, 1, (2172, 724))), (None, None, None));
@@ -853,27 +915,30 @@ mod tests {
         let at = |p: &Path| p.display().to_string();
         let none = transform::Transform::default();
         let trim = transform::Transform { trim: Some(0), ..Default::default() };
-        check_output(Some(&at(&out)), Format::Png, 1, &none).unwrap();
+        check_output(Some(&at(&out)), Format::Png, 1, &none, false).unwrap();
         assert!(dir.join("new").is_dir(), "the folder is created up front");
 
         std::fs::write(dir.join("new/car.raw.png"), b"x").unwrap();
-        check_output(Some(&at(&out)), Format::Png, 1, &none).unwrap();
-        let err = check_output(Some(&at(&out)), Format::Png, 1, &trim).unwrap_err();
+        check_output(Some(&at(&out)), Format::Png, 1, &none, false).unwrap();
+        let err = check_output(Some(&at(&out)), Format::Png, 1, &trim, false).unwrap_err();
         assert!(err.message.contains("car.raw.png already exists"), "{}", err.message);
 
         std::fs::write(dir.join("new/car-2.png"), b"x").unwrap();
-        check_output(Some(&at(&out)), Format::Png, 1, &none).unwrap();
-        assert!(check_output(Some(&at(&out)), Format::Png, 2, &none).unwrap_err().message.contains("car-2.png"));
+        check_output(Some(&at(&out)), Format::Png, 1, &none, false).unwrap();
+        assert!(check_output(Some(&at(&out)), Format::Png, 2, &none, false).unwrap_err().message.contains("car-2.png"));
 
         // A folder gets new, unique names.
-        check_output(Some(&at(&dir.join("new"))), Format::Png, 3, &trim).unwrap();
-        check_output(None, Format::Png, 1, &trim).unwrap();
+        check_output(Some(&at(&dir.join("new"))), Format::Png, 3, &trim, false).unwrap();
+        check_output(None, Format::Png, 1, &trim, false).unwrap();
+        std::fs::write(dir.join("noted.png.json"), b"{}").unwrap();
+        assert!(check_output(Some(&at(&dir.join("noted.png"))), Format::Png, 1, &none, true).unwrap_err().message.contains("noted.png.json"));
+        check_output(Some(&at(&dir.join("noted.png"))), Format::Png, 1, &none, false).unwrap();
         // A folder -o is created, and one that can't be is refused.
-        check_output(Some(&format!("{}/", at(&dir.join("made")))), Format::Png, 1, &none).unwrap();
+        check_output(Some(&format!("{}/", at(&dir.join("made")))), Format::Png, 1, &none, false).unwrap();
         assert!(dir.join("made").is_dir());
         // A file where the folder should be.
         std::fs::write(dir.join("blocked"), b"x").unwrap();
-        assert!(check_output(Some(&at(&dir.join("blocked/car.png"))), Format::Png, 1, &none).is_err());
-        assert!(check_output(Some(&format!("{}/", at(&dir.join("blocked")))), Format::Png, 1, &none).is_err());
+        assert!(check_output(Some(&at(&dir.join("blocked/car.png"))), Format::Png, 1, &none, false).is_err());
+        assert!(check_output(Some(&format!("{}/", at(&dir.join("blocked")))), Format::Png, 1, &none, false).is_err());
     }
 }

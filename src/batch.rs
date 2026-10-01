@@ -4,6 +4,8 @@
 use crate::auth::{self, Credentials};
 use crate::backend::{Backend, Request, Transport};
 use crate::cli::{self, Aspect};
+use crate::manifest;
+use crate::presets::{self, Library, RoleImage, Setup, Source};
 use crate::convert;
 use crate::error::{Error, Kind, Result};
 use crate::images::{self, Encoding, Format, MAX_EDIT_IMAGES};
@@ -54,7 +56,10 @@ Spec:
     "raw_dir": "raw",       generated images, <raw_dir>/<key>.png (default "raw")
     "out_dir": "out",       converted images, <out_dir>/<key>.<ext> (default "out");
                             both relative to the spec file
-    "style": "...",         appended to every prompt
+    "style": "...",         text appended to every prompt
+    "views": {...},         presets of this spec, as in codex-img.json (see
+    "styles": {...},        `codex-img presets --help`); they win over the
+    "characters": {...},    project's and global ones
     "defaults": {...},      fields every asset gets unless it sets them itself
     "assets": {
       "trees/oak": {"prompt": "...", "aspect": "3:2", "max": "420x380"},
@@ -67,6 +72,10 @@ Asset fields (in an asset, null or false turns a default off):
   prompt                    Required
   aspect, size, quality,    As the generation options -a, -s, -q and -b
   background
+  view, style, character    Preset names, as --view, --style and --character (style
+                            and character can be lists)
+  style_ref, character_ref, Reference images with a role, as the --*-ref options;
+  composition_ref           relative to the spec
   reference                 Key(s) whose raw image is passed as -i; generated first
   images                    Other -i files, relative to the spec
   publish                   false: generate only, e.g. a reference for other assets
@@ -77,6 +86,10 @@ Asset fields (in an asset, null or false turns a default off):
                             true for a flag, a number or string for a value, a
                             list for several keys
   max                       "WxH" or [W, H]: resize to fit, never enlarging
+
+Each generated raw image gets a manifest beside it (<key>.png.json): the prompt sent,
+presets, inputs and what the backend reported. When the spec has changed since, the
+asset's skip line says so; delete the raw image to re-roll it.
 
 Example:
   codex-img batch art/assets.json tracks/city --dry-run"#
@@ -132,11 +145,16 @@ pub fn parse(args: &[String]) -> Result<Option<BatchOptions>> {
 #[derive(Debug)]
 struct Asset {
     key: String,
-    /// With the spec's style appended.
+    /// The prompt as sent: composed from the asset's own, its presets and the spec's style.
     prompt: String,
+    /// The asset's own prompt, for the manifest.
+    user_prompt: String,
     size: Option<String>,
     /// Already applied to `prompt`; kept to check the result's shape.
     aspect: Option<Aspect>,
+    /// Reference images from presets and *_ref fields, sent after `references` and `images`.
+    role_images: Vec<RoleImage>,
+    used: Vec<(presets::Kind, String, Source)>,
     quality: Option<String>,
     background: Option<String>,
     /// Indices of the assets whose raw images are passed as references.
@@ -163,21 +181,45 @@ impl Spec {
     fn out_path(&self, asset: &Asset) -> PathBuf {
         self.out_dir.join(format!("{}.{}", asset.key, asset.format.extension()))
     }
+
+    /// The images an asset's request sends, in order: references, images, then role images.
+    fn inputs(&self, asset: &Asset) -> Vec<manifest::Input> {
+        let plain = asset.references.iter().map(|&r| self.raw_path(&self.assets[r])).chain(asset.images.iter().cloned());
+        let mut inputs: Vec<manifest::Input> = plain.map(|path| manifest::Input { path, role: "input", character: None }).collect();
+        inputs.extend(asset.role_images.iter().map(|i| manifest::Input { path: i.path.clone(), role: i.role.name(), character: i.character.clone() }));
+        inputs
+    }
+
+    /// Whether the raw image's manifest records another prompt or other inputs than the spec
+    /// asks for now. Without a manifest, nothing is known, so no.
+    fn changed(&self, asset: &Asset) -> bool {
+        let paths: Vec<PathBuf> = self.inputs(asset).into_iter().map(|i| i.path).collect();
+        manifest::read(&manifest::path_for(&self.raw_path(asset))).is_some_and(|m| manifest::changed(&m, &asset.prompt, &paths))
+    }
 }
 
-const TOP_FIELDS: [&str; 5] = ["raw_dir", "out_dir", "style", "defaults", "assets"];
-const ASSET_FIELDS: [&str; 25] = [
-    "prompt", "size", "aspect", "quality", "background", "reference", "images", "publish", "format", "colors", "dither", "output_quality", "lossless", "trim",
+const TOP_FIELDS: [&str; 8] = ["raw_dir", "out_dir", "style", "defaults", "assets", "views", "styles", "characters"];
+const ASSET_FIELDS: [&str; 31] = [
+    "prompt", "size", "aspect", "view", "style", "character", "style_ref", "character_ref", "composition_ref", "quality", "background", "reference", "images", "publish", "format", "colors", "dither", "output_quality", "lossless", "trim",
     "hard_alpha", "resize", "max", "fit", "no_enlarge", "no_bleed", "key", "key_region", "key_cut", "key_spread", "trim_density",
 ];
 
 fn load_spec(path: &Path) -> Result<Spec> {
     let text = std::fs::read_to_string(path).map_err(|e| Error::usage(format!("Unable to read {}: {e}", path.display())))?;
     let value: Value = serde_json::from_str(&text).map_err(|e| Error::usage(format!("{} is not valid JSON: {e}", path.display())))?;
-    parse_spec(&value, path.parent().unwrap_or(Path::new(""))).map_err(|e| Error::usage(format!("{}: {}", path.display(), e.message)))
+    let base = path.parent().unwrap_or(Path::new(""));
+    let files = PresetFiles { project: presets::find_project(base), global: presets::global_dir().map(|d| d.join("presets.json")) };
+    parse_spec(&value, base, &files).map_err(|e| Error::usage(format!("{}: {}", path.display(), e.message)))
 }
 
-fn parse_spec(value: &Value, base: &Path) -> Result<Spec> {
+/// The project and global preset files, read only when the spec names a preset.
+#[derive(Default)]
+struct PresetFiles {
+    project: Option<PathBuf>,
+    global: Option<PathBuf>,
+}
+
+fn parse_spec(value: &Value, base: &Path, files: &PresetFiles) -> Result<Spec> {
     let top = value.as_object().ok_or_else(|| Error::usage("the spec must be a JSON object."))?;
     unknown_fields(top, &TOP_FIELDS, "the spec")?;
     let dir = |name: &str, default: &str| -> Result<PathBuf> {
@@ -204,6 +246,9 @@ fn parse_spec(value: &Value, base: &Path) -> Result<Spec> {
         return Err(Error::usage("defaults can't set prompt or reference."));
     }
     let entries = top.get("assets").and_then(Value::as_object).ok_or_else(|| Error::usage("assets must be an object of key -> asset."))?;
+    let names = |object: &Map<String, Value>| ["view", "style", "character"].iter().any(|f| object.get(*f).is_some_and(|v| !v.is_null() && *v != Value::Bool(false)));
+    let named = names(defaults) || entries.values().filter_map(Value::as_object).any(names);
+    let library = Library::load(Some((top, base)), files.project.as_deref().filter(|_| named), files.global.as_deref().filter(|_| named))?;
     let keys: Vec<&str> = entries.keys().map(String::as_str).collect();
     let mut assets = Vec::with_capacity(entries.len());
     for (key, entry) in entries {
@@ -212,7 +257,7 @@ fn parse_spec(value: &Value, base: &Path) -> Result<Spec> {
         let own = entry.as_object().ok_or_else(|| context(Error::usage("must be an object.")))?;
         unknown_fields(own, &ASSET_FIELDS, "the asset").map_err(context)?;
         let fields = Fields { own, defaults };
-        assets.push(parse_asset(key, &fields, style, &keys, base).map_err(context)?);
+        assets.push(parse_asset(key, &fields, style, &keys, base, &library).map_err(context)?);
     }
     check_cycles(&assets)?;
     Ok(Spec { raw_dir, out_dir, assets })
@@ -297,12 +342,8 @@ impl Fields<'_> {
     }
 }
 
-fn parse_asset(key: &str, fields: &Fields, style: Option<&str>, keys: &[&str], base: &Path) -> Result<Asset> {
-    let prompt = fields.string("prompt")?.filter(|p| !p.trim().is_empty()).ok_or_else(|| Error::usage("prompt is required."))?;
-    let prompt = match style {
-        Some(style) => format!("{} {style}", prompt.trim_end()),
-        None => prompt,
-    };
+fn parse_asset(key: &str, fields: &Fields, style: Option<&str>, keys: &[&str], base: &Path, library: &Library) -> Result<Asset> {
+    let user_prompt = fields.string("prompt")?.filter(|p| !p.trim().is_empty()).ok_or_else(|| Error::usage("prompt is required."))?;
     let size = fields.string("size")?;
     if size.as_deref().is_some_and(|s| !cli::is_size(s)) {
         return Err(Error::usage("size must be WIDTHxHEIGHT or auto."));
@@ -310,13 +351,6 @@ fn parse_asset(key: &str, fields: &Fields, style: Option<&str>, keys: &[&str], b
     let aspect = fields.string("aspect")?.map(|v| Aspect::parse(&v).map_err(|e| Error::usage(e.message.replace("--aspect", "aspect")))).transpose()?;
     if aspect.is_some() && size.as_deref().is_some_and(|s| s != "auto") {
         return Err(Error::usage("aspect and size can't be combined; the backend ignores size, and aspect sets the frame."));
-    }
-    let prompt = match aspect {
-        Some(aspect) => aspect.frame(&prompt),
-        None => prompt,
-    };
-    if prompt.chars().count() > cli::MAX_PROMPT_CHARS {
-        return Err(Error::usage("the prompt (with the style and aspect) is longer than 32,000 characters."));
     }
     let quality = cli::one_of("quality", fields.string("quality")?, &["low", "medium", "high", "auto"])?;
     let background = cli::one_of("background", fields.string("background")?, &["transparent", "opaque", "auto"])?;
@@ -331,6 +365,24 @@ fn parse_asset(key: &str, fields: &Fields, style: Option<&str>, keys: &[&str], b
     let images: Vec<PathBuf> = fields.strings("images")?.iter().map(|p| base.join(p)).collect();
     if references.len() + images.len() > MAX_EDIT_IMAGES {
         return Err(Error::usage(format!("at most {MAX_EDIT_IMAGES} references and images together.")));
+    }
+    let refs = |name: &str| -> Result<Vec<PathBuf>> { Ok(fields.strings(name)?.iter().map(|p| base.join(p)).collect()) };
+    let setup = Setup {
+        aspect,
+        view: fields.string("view")?,
+        styles: fields.strings("style")?,
+        characters: fields.strings("character")?,
+        style_refs: refs("style_ref")?,
+        character_refs: refs("character_ref")?,
+        composition_refs: refs("composition_ref")?,
+    };
+    let composed = presets::compose(&user_prompt, style, &setup, library, references.len() + images.len()).map_err(|e| {
+        let hint = if e.message.starts_with("Unknown style") { " For text that ends every prompt, use the spec's top-level style." } else { "" };
+        Error::usage(format!("{}{hint}", e.message))
+    })?;
+    let prompt = composed.prompt;
+    if prompt.chars().count() > cli::MAX_PROMPT_CHARS {
+        return Err(Error::usage("the prompt (with the style, presets and aspect) is longer than 32,000 characters."));
     }
     let publish = match fields.own.get("publish").or_else(|| fields.defaults.get("publish")) {
         None | Some(Value::Bool(true)) => true,
@@ -376,7 +428,7 @@ fn parse_asset(key: &str, fields: &Fields, style: Option<&str>, keys: &[&str], b
         no_enlarge,
     };
     transform.check()?;
-    Ok(Asset { key: key.to_string(), prompt, size, aspect, quality, background, references, images, publish, format, encoding, transform })
+    Ok(Asset { key: key.to_string(), prompt, user_prompt, size, aspect, role_images: composed.images, used: composed.used, quality, background, references, images, publish, format, encoding, transform })
 }
 
 /// References must form no loop, or no asset in it could be generated first.
@@ -586,7 +638,12 @@ fn execute(opts: &BatchOptions, spec: &Spec, backend: &Backend, credentials: &dy
         let plan = generation_plan(spec, &selected);
         for &i in selected.iter().filter(|i| !plan.contains(i)) {
             let raw = spec.raw_path(&spec.assets[i]);
-            report.line("generate", &spec.assets[i].key, Status::Skipped, " (raw image exists)", json!({"rawPath": shown(&raw)}));
+            if spec.changed(&spec.assets[i]) {
+                let detail = " (raw image exists; note: changed since its raw image was generated, delete it to re-roll)";
+                report.line("generate", &spec.assets[i].key, Status::Skipped, detail, json!({"rawPath": shown(&raw), "changed": true}));
+            } else {
+                report.line("generate", &spec.assets[i].key, Status::Skipped, " (raw image exists)", json!({"rawPath": shown(&raw)}));
+            }
         }
         if opts.dry_run {
             for &i in &plan {
@@ -756,8 +813,8 @@ fn generate(spec: &Spec, plan: &[usize], jobs: usize, backend: &Backend, credent
 /// Generate one raw image and save it, untouched, as `<raw_dir>/<key>.png`. Also returns a
 /// warning when the image's shape is off the asset's `aspect`.
 fn generate_asset(spec: &Spec, asset: &Asset, backend: &Backend, credentials: &Credentials, session_id: &str) -> Result<(PathBuf, Option<String>)> {
-    let mut paths: Vec<String> = asset.references.iter().map(|&r| spec.raw_path(&spec.assets[r]).display().to_string()).collect();
-    paths.extend(asset.images.iter().map(|p| p.display().to_string()));
+    let sent = spec.inputs(asset);
+    let paths: Vec<String> = sent.iter().map(|i| i.path.display().to_string()).collect();
     let inputs = images::load_input_images(&paths)?;
     let request = Request {
         prompt: &asset.prompt,
@@ -771,10 +828,25 @@ fn generate_asset(spec: &Spec, asset: &Asset, backend: &Backend, credentials: &C
         session_id,
     };
     let image = backend.generate(&request, credentials, &|_| {})?;
-    let warning = asset.aspect.zip(images::dimensions(&image.bytes)).and_then(|(a, size)| a.mismatch(size));
+    let mut warning = asset.aspect.zip(images::dimensions(&image.bytes)).and_then(|(a, size)| a.mismatch(size));
     let raw = spec.raw_path(asset);
+    let record = manifest::Record {
+        user_prompt: &asset.user_prompt,
+        prompt: &asset.prompt,
+        used: &asset.used,
+        aspect: asset.aspect,
+        size: asset.size.as_deref(),
+        quality: asset.quality.as_deref(),
+        background: asset.background.as_deref(),
+        inputs: &sent,
+    };
+    let note = manifest::build(&record, &image, &|p| shown(p));
     if image.format == Format::Png {
         cli::write_output(&raw, &image.bytes, false)?;
+        if let Err(error) = manifest::write(&manifest::path_for(&raw), &note) {
+            let failed = format!("could not write the manifest: {}", error.message);
+            warning = Some(warning.map_or(failed.clone(), |w| format!("{w}; {failed}")));
+        }
         return Ok((raw, warning));
     }
     // The quota is spent: keep what came back under its real extension if it can't become PNG.
@@ -813,7 +885,7 @@ mod tests {
     }
 
     fn spec(value: Value) -> Result<Spec> {
-        parse_spec(&value, Path::new("/project/art"))
+        parse_spec(&value, Path::new("/project/art"), &PresetFiles::default())
     }
 
     fn spec_error(value: Value) -> String {
@@ -887,7 +959,7 @@ mod tests {
 
     fn temp_spec(name: &str, assets: Value) -> (PathBuf, Spec) {
         let dir = crate::auth::tests::temp_dir(name);
-        let spec = parse_spec(&json!({"style": "Pixel art.", "raw_dir": "raw", "out_dir": "out", "assets": assets}), &dir).unwrap();
+        let spec = parse_spec(&json!({"style": "Pixel art.", "raw_dir": "raw", "out_dir": "out", "assets": assets}), &dir, &PresetFiles::default()).unwrap();
         (dir, spec)
     }
 
@@ -979,7 +1051,7 @@ mod tests {
         std::fs::write(dir.join("hero.png"), &png).unwrap();
         let no_login = || -> Result<Credentials> { Err(Error::auth("no login")) };
         let backend = Backend::new("http://127.0.0.1:9");
-        let run = |value: Value| execute(&options(&[]), &parse_spec(&value, &dir).unwrap(), &backend, &no_login);
+        let run = |value: Value| execute(&options(&[]), &parse_spec(&value, &dir, &PresetFiles::default()).unwrap(), &backend, &no_login);
 
         // Same folder for both: hero.png would be converted over its own raw image.
         let same = run(json!({"raw_dir": ".", "out_dir": ".", "assets": {"hero": {"prompt": "A hero.", "resize": "5x5"}}}));
@@ -1020,7 +1092,7 @@ mod tests {
         assert!(run(images).unwrap_err().message.contains("an image \"a\" uses"));
         // Generating only never writes outputs, so it isn't refused.
         let generate_only = BatchOptions { convert: false, dry_run: true, ..options(&[]) };
-        let spec = parse_spec(&json!({"raw_dir": ".", "out_dir": ".", "assets": {"hero": {"prompt": "A hero."}}}), &dir).unwrap();
+        let spec = parse_spec(&json!({"raw_dir": ".", "out_dir": ".", "assets": {"hero": {"prompt": "A hero."}}}), &dir, &PresetFiles::default()).unwrap();
         assert_eq!(execute(&generate_only, &spec, &backend, &no_login).unwrap(), 0);
     }
 
@@ -1046,6 +1118,56 @@ mod tests {
         let calls = captured.lock().unwrap();
         assert!(calls[0].body["prompt"].as_str().unwrap().starts_with("The frame must be in 16:9"));
         assert!(calls[0].body.get("size").is_none(), "aspect sends no size");
+    }
+
+    #[test]
+    fn presets_compose_the_request_and_the_manifest_notes_changes() {
+        let dir = crate::auth::tests::temp_dir("batch-presets");
+        let png = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, crate::images::tests::PNG_B64).unwrap();
+        for file in ["refs/captain.png", "refs/ink.png", "refs/layout.png"] {
+            std::fs::create_dir_all(dir.join(file).parent().unwrap()).unwrap();
+            std::fs::write(dir.join(file), &png).unwrap();
+        }
+        // The project file is read because the spec names presets; the spec's own wins over it.
+        let project = dir.join("codex-img.json");
+        std::fs::write(&project, json!({"styles": {"ink": {"text": "Ink wash.", "refs": ["refs/ink.png"]}}, "characters": {"captain": "project captain"}}).to_string()).unwrap();
+        let spec_value = |prompt: &str| {
+            json!({
+                "style": "No text.",
+                "characters": {"captain": {"text": "a walrus sailor", "refs": ["refs/captain.png"]}},
+                "defaults": {"view": "side", "style": "ink"},
+                "assets": {
+                    "base": {"prompt": "A pier.", "view": null, "style": null},
+                    "hero": {"prompt": prompt, "reference": "base", "character": "captain", "composition_ref": "refs/layout.png"}
+                }
+            })
+        };
+        let files = PresetFiles { project: Some(project), global: None };
+        let spec = parse_spec(&spec_value("The captain waves."), &dir, &files).unwrap();
+        let hero = &spec.assets[1];
+        assert!(hero.prompt.starts_with("Camera: seen perfectly straight on from the side"));
+        assert!(hero.prompt.contains("Image 2: style reference only") && hero.prompt.contains("Image 3: character reference for \"captain\"") && hero.prompt.contains("Image 4: composition reference only"));
+        assert!(hero.prompt.contains("The character \"captain\": a walrus sailor") && hero.prompt.ends_with("The captain waves. Ink wash. No text."));
+        assert_eq!(spec.assets[0].prompt, "A pier. No text.", "null turns a default preset off");
+        assert!(parse_spec(&json!({"defaults": {"style": "16-bit pixel art"}, "assets": {"a": {"prompt": "x"}}}), &dir, &files).unwrap_err().message.contains("top-level style"));
+
+        let (backend, captured) = serve(vec![(200, "application/json", direct_response()), (200, "application/json", direct_response())]);
+        let mut opts = options(&[]);
+        opts.convert = false;
+        assert_eq!(execute(&opts, &spec, &backend, &|| Ok(creds())).unwrap(), 0);
+        {
+            let calls = captured.lock().unwrap();
+            assert_eq!(calls[1].body["prompt"], hero.prompt.as_str());
+            assert_eq!(calls[1].body["images"].as_array().unwrap().len(), 4, "the base's raw image, then ink, captain and layout");
+        }
+        let note = manifest::read(&manifest::path_for(&dir.join("raw/hero.png"))).unwrap();
+        assert_eq!((note["userPrompt"].as_str(), note["inputs"][0]["path"].as_str()), (Some("The captain waves."), Some(shown(&dir.join("raw/base.png")).as_str())));
+        assert_eq!(note["presets"][2], json!({"kind": "character", "name": "captain", "source": "spec"}));
+        assert!(!spec.changed(hero));
+        let edited = parse_spec(&spec_value("The captain salutes."), &dir, &files).unwrap();
+        assert!(edited.changed(&edited.assets[1]), "a new prompt");
+        std::fs::write(dir.join("refs/layout.png"), b"other").unwrap();
+        assert!(spec.changed(hero), "a changed reference image");
     }
 
     #[test]

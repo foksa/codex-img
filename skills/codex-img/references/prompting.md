@@ -42,7 +42,7 @@ Avoid: <what must not appear>
 - If a missing detail would make the result unusable (the exact text, which image is the edit target), ask. Otherwise proceed.
 
 ## Composition
-- Set the shape with `-a W:H` rather than in your own words; it adds a sentence that the backend follows reliably. Name the framing and viewpoint (close-up, wide, top-down, eye level) when it matters.
+- Set the shape with `-a W:H` rather than in your own words; it adds a sentence that the backend follows reliably. For a game's camera angle, use `--view` (below). Otherwise name the framing and viewpoint (close-up, wide, eye level) when it matters.
 - If the image needs room for headline copy or UI, ask for usable negative space. Don't pick a side (left/right) unless the layout around it calls for one.
 - For people, say how much of the body is in frame and what they look at or hold: "full body visible", "looking down at the book", "hands gripping the handlebars".
 
@@ -70,10 +70,24 @@ Avoid: <what must not appear>
 - **Stylized concept:** name the style cues, material finish and rendering approach (3D, painterly, clay, flat vector) without inventing new story elements.
 - **Historical scene:** give the place and date, and keep clothing, props and setting accurate to the period ("no modern objects").
 - **Transparent asset (sticker, sprite, cutout):** use `-b transparent`. Ask for a single isolated subject, crisp edges, generous padding, and no shadow, floor, reflection or background.
-- **Side-on game scenery (buildings, props for a low camera):** "front view at a slight angle" or "standing on a dock" gives a visible top surface, which in a pseudo-3D or side-scrolling game looks like the ground sloping up behind the object. Ask for: "seen perfectly straight on from the front at eye level, a flat front elevation with no top surfaces visible, its bottom edge a straight horizontal line, standing on nothing: no platform, no dock, no base, no ground". Boats and docks still tend to come with painted sea; remove it with `convert --key auto` (see SKILL.md).
+- **Game camera angles: use `--view`.** One preset per game keeps every sprite in the same perspective; wording that varies from prompt to prompt drifts.
+
+  | Game | View |
+  |---|---|
+  | Pseudo-3D racer roadside, side-scroller, platformer | `side` (or `front` for objects facing the player) |
+  | Top-down racer or shooter, map tiles, board pieces | `top-down` |
+  | Classic RPG towns and characters | `three-quarter` |
+  | City builder, strategy, isometric tiles | `isometric` |
+
+  Why it matters: "front view at a slight angle" or "standing on a dock" gives a visible top surface, which in a low-camera game looks like the ground sloping up behind the object. `side` and `front` ask for a flat elevation with no top surface and a straight bottom edge. Still say "no platform, no dock, no ground" for things that usually stand on something. Boats and docks tend to come with painted sea anyway; remove it with `convert --key auto` (see SKILL.md). If none of these fit, define the project's own view once: `codex-img presets add view <name> --text "..."`.
 - **Tileable texture:** "seamless tileable texture, no focal point, even lighting". Check it by placing copies side by side. For a panorama that must wrap left to right, use `codex-img tile` instead.
 - **A set of assets:** append one shared style sentence to every prompt (palette, pixel size or rendering, outline, lighting). That kept 80+ sprites of one game consistent without a style reference image. Review the set with `codex-img sheet`.
-- **The same character in a new scene:** pass an earlier image of the character with `-i` as the anchor, and say "same character; don't redesign it; keep face, proportions, outfit and palette", then describe the new scene and action.
+- **The same character in a new scene:**
+  1. Make one clean anchor image of the character.
+  2. Save it as a preset whose text is only the character's looks: `codex-img presets add character <name> --ref anchor.png --text "a stocky walrus captain with big tusks, yellow raincoat, white captain's hat"`.
+  3. Use `--character <name>` with a prompt that describes the scene and action. The reference is labelled and the looks are added for you.
+
+  Keep the preset text free of poses, backgrounds and "isolated on ..." wording, which would leak into every scene. For a one-off, `--character-ref anchor.png` does the same without a preset.
 
 ## Edit
 - **Text localization:** change only the text. Keep layout, typography, spacing and hierarchy. List each old → new string.
@@ -136,12 +150,10 @@ Image 1 is the edit target. Change only the sky: make it a clear night with a
 green aurora. Keep the fox, its pose, colours, the snow and the framing unchanged.
 ```
 
-**Same character, new scene** (`-i hero-anchor.png`)
+**Same character, new scene** (`--character hero -a 3:2`; the preset holds the anchor image and the hero's looks)
 ```
-Image 1: the character anchor; don't redesign the character.
-Same young forest hero, now gently helping a frightened squirrel out of a fallen
-tree in a snowy forest after a storm. Same children's book watercolour style as
-Image 1. Keep facial features, proportions, outfit and colour palette. No text.
+The hero gently helping a frightened squirrel out of a fallen tree in a snowy
+forest after a storm. Children's book watercolour style. No text.
 ```
 
 **Transparent sticker** (`-b transparent -o sticker.png`)

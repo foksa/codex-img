@@ -38,4 +38,14 @@ JSON
 [ -s public/props/sprite.png ] || fail "batch wrote no output"
 "$bin" batch art/assets.json --convert-only --json | grep -q '"status":"unchanged"' || fail "batch rewrote an unchanged output"
 
+# presets: built-in views, then a project preset; global presets go to a folder of our own.
+export XDG_CONFIG_HOME="$work/config"
+"$bin" presets --json | grep -q '"name":"isometric","source":"built-in"' || fail "presets: no built-in isometric view"
+"$bin" presets add style smoke --text "flat colours" --ref "$fixture" > /dev/null
+[ -s presets/styles/smoke/1-sprite.png ] || fail "presets add didn't copy a ref from outside the project"
+"$bin" presets promote style smoke > /dev/null
+"$bin" presets show style smoke --json | grep -q '"source":"project"' || fail "presets: the project preset should win over the global one"
+"$bin" presets remove style smoke > /dev/null
+"$bin" presets show style smoke --json | grep -q '"source":"global"' || fail "presets: the promoted global preset is gone"
+
 echo "smoke test passed"
