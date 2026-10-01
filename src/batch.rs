@@ -194,11 +194,12 @@ impl Spec {
         inputs
     }
 
-    /// Whether the raw image's manifest records another prompt or other inputs than the spec
-    /// asks for now. Without a manifest, nothing is known, so no.
+    /// Whether the raw image's manifest records another prompt, other request settings or other
+    /// inputs than the spec asks for now. Without a manifest, nothing is known, so no.
     fn changed(&self, asset: &Asset) -> bool {
         let paths: Vec<PathBuf> = self.inputs(asset).into_iter().map(|i| i.path).collect();
-        manifest::read(&manifest::path_for(&self.raw_path(asset))).is_some_and(|m| manifest::changed(&m, &asset.prompt, &paths))
+        let request = manifest::request(asset.aspect, asset.size.as_deref(), asset.quality.as_deref(), asset.background.as_deref());
+        manifest::read(&manifest::path_for(&self.raw_path(asset))).is_some_and(|m| manifest::changed(&m, &asset.prompt, &request, &paths))
     }
 }
 
@@ -718,12 +719,13 @@ fn check_outputs(spec: &Spec) -> Result<()> {
     for asset in &spec.assets {
         inputs.push((resolved(&spec.raw_path(asset)), format!("the raw image of \"{}\"", asset.key)));
         inputs.extend(asset.images.iter().map(|p| (resolved(p), format!("an image \"{}\" uses", asset.key))));
+        inputs.extend(asset.role_images.iter().map(|i| (resolved(&i.path), format!("a {} reference \"{}\" uses", i.role.name(), asset.key))));
     }
     for asset in spec.assets.iter().filter(|a| a.publish) {
         let out = spec.out_path(asset);
         if let Some((_, what)) = inputs.iter().find(|(input, _)| *input == resolved(&out)) {
             return Err(Error::usage(format!(
-                "assets.\"{}\": its output {} would overwrite {what}; give out_dir and raw_dir separate folders.",
+                "assets.\"{}\": its output {} would overwrite {what}; keep inputs out of out_dir, and give out_dir and raw_dir separate folders.",
                 asset.key,
                 shown(&out)
             )));
@@ -1074,6 +1076,13 @@ mod tests {
         assert_eq!(std::fs::read(dir.join("hero.png")).unwrap(), png, "the raw image is untouched");
         // A different format doesn't collide.
         assert_eq!(run(json!({"raw_dir": ".", "out_dir": ".", "assets": {"hero": {"prompt": "A hero.", "format": "webp"}}})).unwrap(), 0);
+
+        // A reference with a role in out_dir would be replaced by a converted output too.
+        std::fs::create_dir_all(dir.join("published")).unwrap();
+        std::fs::write(dir.join("published/hero.png"), &png).unwrap();
+        let styled = run(json!({"out_dir": "published", "assets": {"hero": {"prompt": "A hero."}, "villain": {"prompt": "A villain.", "style_ref": "published/hero.png"}}}));
+        assert!(styled.unwrap_err().message.contains("would overwrite a style reference \"villain\" uses"));
+        assert_eq!(std::fs::read(dir.join("published/hero.png")).unwrap(), png, "the reference is untouched");
 
         // The output folder is a symlink to the raw folder.
         std::fs::create_dir_all(dir.join("raw")).unwrap();

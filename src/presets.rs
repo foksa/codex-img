@@ -642,7 +642,9 @@ fn add(file: &Path, kind: Kind, name: &str, text: Option<String>, refs: &[PathBu
     let mut stored = Vec::new();
     let mut copies = Vec::new();
     for (i, r) in refs.iter().enumerate() {
-        let inside = (!global).then(|| relative_inside(r, &base)).flatten().filter(|p| !p.starts_with(owned.strip_prefix(&base).unwrap_or(&owned)));
+        // A ref in a folder `add` made (this preset's or another's) is copied too: `remove` or a
+        // replacement deletes that folder, which would break a preset pointing into it.
+        let inside = (!global).then(|| relative_inside(r, &base)).flatten().filter(|p| !p.starts_with("presets"));
         match inside {
             Some(relative) => stored.push(slashes(&relative)),
             None => {
@@ -836,6 +838,16 @@ mod tests {
         png(&project_dir.join("art/raw/captain.png"));
         png(&dir.join("downloads/style.png"));
         let run = |list: &[&str]| execute(&parse(&args(list)).unwrap().unwrap(), &places);
+
+        // A ref copied into one preset's folder is copied again for another, so removing the
+        // first doesn't break the second.
+        png(&dir.join("downloads/shared.png"));
+        run(&["add", "style", "first", "--ref", dir.join("downloads/shared.png").to_str().unwrap()]).unwrap();
+        run(&["add", "style", "second", "--ref", project_dir.join("presets/styles/first/1-shared.png").to_str().unwrap()]).unwrap();
+        run(&["remove", "style", "first"]).unwrap();
+        assert!(project_dir.join("presets/styles/second/1-1-shared.png").is_file());
+        run(&["remove", "style", "second"]).unwrap();
+        std::fs::remove_file(project_dir.join(PROJECT_FILE)).unwrap();
 
         // A hand-written file keeps its other entries and order.
         write(&project_dir.join(PROJECT_FILE), json!({"views": {"roadside": "seen from the road"}}));
