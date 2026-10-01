@@ -55,7 +55,9 @@ Usage:
 Options:
   -o, --output <path>       Output file or directory (default: current directory)
   -i, --image <path>        Reference image to edit/compose (repeatable, max {MAX_EDIT_IMAGES})
-  -s, --size <WxH>          Shape hint, e.g. 1536x1024, 1024x1536, auto
+  -a, --aspect <W:H>        Frame shape, 1:3 to 3:1 (16:9, 2:3, 1:1): leads the prompt
+                            with a sentence asking for it, and warns if the result is off
+  -s, --size <WxH>          Sent to the backend, which has ignored it in tests; use --aspect
   -q, --quality <q>         low | medium | high | auto
   -b, --background <bg>     transparent | opaque | auto
   -n, --count <n>           Number of images, generated in parallel (default: 1)
@@ -86,6 +88,40 @@ def is_size(value):
     return bool(sep) and ok(w) and ok(h)
 
 
+def parse_aspect(value):
+    """(W, H) from "W:H". Ratios beyond 3:1 came back clamped, so they're refused before any request."""
+    w, sep, h = value.partition(":")
+    ok = lambda p: p.isdigit() and p.isascii() and 1 <= int(p) <= 100
+    if not (sep and ok(w) and ok(h)):
+        raise Fail(USAGE, "--aspect must be W:H, such as 16:9 or 2:3.")
+    w, h = int(w), int(h)
+    if w > 3 * h or h > 3 * w:
+        raise Fail(USAGE, "--aspect must be between 1:3 and 3:1; the backend clamps anything wider or taller.")
+    return w, h
+
+
+def frame(aspect, prompt):
+    """The backend ignores the size field, but keeps to a ratio stated at the start of the prompt."""
+    w, h = aspect
+    shape = ("landscape format, wider than it is tall" if w > h else
+             "portrait format, taller than it is wide" if w < h else "square format, as wide as it is tall")
+    return f"The frame must be in {w}:{h} {shape}.\n\n{prompt}"
+
+
+def png_size(data):
+    if data[:8] == b"\x89PNG\r\n\x1a\n" and data[12:16] == b"IHDR" and len(data) >= 24:
+        return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+    return None
+
+
+def aspect_mismatch(aspect, size):
+    """A warning when `size` is more than 2% off the ratio: wrong framing, not rounding."""
+    (aw, ah), (w, h) = aspect, size
+    if abs((w / max(h, 1)) / (aw / ah) - 1) > 0.02:
+        return f"asked for {aw}:{ah} but the backend returned {w}x{h}"
+    return None
+
+
 def parse(args):
     # The binary's subcommands: refuse them rather than generate an image from "sheet a.png".
     if args[:1] and args[0] in ("convert", "sheet", "batch", "tile"):
@@ -95,7 +131,7 @@ def parse(args):
         return {"command": "status", "json": len(args) > 1}
     names = {
         "-o": "output", "--output": "output", "-i": "image", "--image": "image",
-        "-s": "size", "--size": "size", "-q": "quality", "--quality": "quality",
+        "-s": "size", "--size": "size", "-a": "aspect", "--aspect": "aspect", "-q": "quality", "--quality": "quality",
         "-b": "background", "--background": "background", "-n": "count", "--count": "count",
     }
     unsupported = {"-f", "--format", "--via-responses", "-m", "--model", "-c", "--colors", "--dither",
@@ -145,6 +181,9 @@ def parse(args):
     size = values.get("size")
     if size is not None and not is_size(size):
         raise Fail(USAGE, "--size must be WIDTHxHEIGHT or auto.")
+    aspect = parse_aspect(values["aspect"]) if values.get("aspect") is not None else None
+    if aspect and size not in (None, "auto"):
+        raise Fail(USAGE, "--aspect and --size can't be combined; the backend ignores --size, and --aspect sets the frame.")
     for key, allowed in (("quality", ("low", "medium", "high", "auto")), ("background", ("transparent", "opaque", "auto"))):
         if values.get(key) is not None and values[key] not in allowed:
             raise Fail(USAGE, f"--{key} must be one of: {', '.join(allowed)}")
@@ -155,7 +194,7 @@ def parse(args):
         raise Fail(USAGE, f"At most {MAX_EDIT_IMAGES} --image references are supported.")
     return {
         "command": "run", "prompt": " ".join(positionals), "output": output, "images": values["image"],
-        "size": size, "quality": values.get("quality"), "background": values.get("background"),
+        "size": size, "aspect": aspect, "quality": values.get("quality"), "background": values.get("background"),
         "count": int(count), "json": "json" in seen, "quiet": "quiet" in seen,
     }
 
@@ -471,6 +510,8 @@ def run_one(opts, input_urls, creds, index, lock, log):
     tag = f"[{index + 1}] " if opts["count"] > 1 else ""
     log(f"{tag}{'editing' if input_urls else 'generating'}")
     image = generate(opts, input_urls, creds)
+    got = png_size(image["bytes"]) if opts["aspect"] else None
+    shape_warning = aspect_mismatch(opts["aspect"], got) if got else None
     wanted = output_path(opts["output"], "png", image["id"], index, opts["count"])
     path, warning = wanted, None
     if image["format"] != "png":
@@ -488,6 +529,8 @@ def run_one(opts, input_urls, creds, index, lock, log):
         info["usage"] = image["usage"]
     info["durationMs"] = image["durationMs"]
     with lock:
+        if shape_warning:
+            print(f"codex-img: {tag}warning: {shape_warning}", file=sys.stderr)
         if warning:
             print(f"codex-img: {tag}warning: {warning}", file=sys.stderr)
         print(json.dumps(info) if opts["json"] else path, flush=True)
@@ -518,6 +561,8 @@ def main(args):
         opts = cmd
         if opts["prompt"] == "-":
             opts["prompt"] = sys.stdin.read().strip()
+        if opts["aspect"] and opts["prompt"].strip():
+            opts["prompt"] = frame(opts["aspect"], opts["prompt"])
         if not opts["prompt"].strip() or len(opts["prompt"]) > MAX_PROMPT_CHARS:
             raise Fail(USAGE, "Image prompt must contain 1 to 32,000 characters.")
         check_output(opts["output"], opts["count"])

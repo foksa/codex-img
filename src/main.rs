@@ -90,6 +90,9 @@ fn generate(mut opts: Options) -> Result<i32> {
         std::io::stdin().read_to_string(&mut prompt).map_err(|e| Error::other(format!("Could not read prompt from stdin: {e}")))?;
         opts.prompt = prompt.trim().to_string();
     }
+    if let Some(aspect) = opts.aspect.filter(|_| !opts.prompt.trim().is_empty()) {
+        opts.prompt = aspect.frame(&opts.prompt);
+    }
     let chars = opts.prompt.chars().count();
     if opts.prompt.trim().is_empty() || chars > cli::MAX_PROMPT_CHARS {
         return Err(Error::usage("Image prompt must contain 1 to 32,000 characters."));
@@ -135,6 +138,9 @@ fn generate(mut opts: Options) -> Result<i32> {
                     session_id: &session_id,
                 };
                 let image = backend.generate(&request, &credentials, &|stage| log(&format!("{tag}{stage}")))?;
+                if let Some(warning) = opts.aspect.zip(images::dimensions(&image.bytes)).and_then(|(a, size)| a.mismatch(size)) {
+                    eprintln!("codex-img: {tag}warning: {warning}");
+                }
                 let target = cli::output_path(opts.output.as_deref(), format, &image.id, index, count, util::now_secs());
                 let saved = cli::save_image(&image.bytes, image.format, format, &opts.encoding, &opts.transform, &target)?;
                 if let Some(warning) = &saved.warning {

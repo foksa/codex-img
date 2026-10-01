@@ -11,6 +11,7 @@ description: Generate or edit raster images (PNG/JPEG/WebP) with the `codex-img`
 
 ```sh
 codex-img "<prompt>" -o <path> --json                  # generate
+codex-img "<prompt>" -a 16:9 -o <path> --json          # with a frame shape
 codex-img "<prompt>" -i <image> -o <path> --json       # edit / use as reference (repeat -i, max 5)
 codex-img "<prompt>" -n 3 -o <dir>/ --json             # 3 variations in parallel (only if asked)
 codex-img status --json                                # check login, uses no quota
@@ -21,7 +22,8 @@ codex-img convert <file>... [-o <path>] [-f fmt] [-c n] [--trim] [--resize WxH] 
 |---|---|
 | `-o` | File (`hero.png`) or directory (`assets/`). Format is inferred from the extension. Existing files are never overwritten, so choose a new name for each iteration. A taken name fails at once (exit `1`), before any quota is spent. |
 | `-i` | PNG, JPEG or WebP input, repeatable up to 5 |
-| `-s` | `1536x1024` (landscape), `1024x1536` (portrait), `auto`; a hint for the shape, not exact pixels (`1536x1024` can come back as 1672x941). For exact pixels, add `--resize WxH --fit cover` |
+| `-a` | Frame shape `W:H`, from 1:3 to 3:1: `16:9`, `3:2`, `1:1`, `2:3`, `9:16`. It starts the prompt with a sentence asking for that ratio, which is what sets the shape; a `warning:` on stderr means it came back more than 2% off. The backend keeps about 1.57 megapixels (2:3 is 1024x1536, 16:9 is 1672x941), so for exact pixels add `--resize WxH --fit cover` |
+| `-s` | Ignored by the backend in tests; use `-a` for the shape |
 | `-b` | `transparent` for real alpha (PNG only), `opaque`, `auto` |
 | `--trim`, `--resize`, `--fit`, `--hard-alpha` | Same as in `convert` (below), applied before saving. Useful for sprites: `-b transparent --trim=4 --resize 400x`. The untouched original is also saved as `<name>.raw.png` and reported as `rawPath`; keep it, since there's no seed to regenerate it. `size` is then the saved file's, and `rawSize` the backend's |
 | `-q` | `low` \| `medium` \| `high` \| `auto`; a hint, and the subscription caps it at medium |
@@ -67,12 +69,12 @@ For a sky or backdrop that repeats side by side, run `codex-img tile sky.png -o 
 
 ### Many assets: `codex-img batch`
 
-For a set of assets, such as a game's art, keep them in a JSON spec and run `codex-img batch spec.json [key or folder...]` instead of scripting many calls. Each asset has a prompt, generation fields and `convert` options with underscores (`hard_alpha`, `max: [W, H]`). The spec also has a shared `style` appended to every prompt, `defaults`, and `reference` keys for edits of another asset's raw image. `batch` generates only missing raw images (delete one to re-roll it) and converts all of them, rewriting only files that changed. Run `--dry-run` first to see what would be generated, because that uses quota. `--convert-only` needs no login. Each convert line reports the output's final size (`-> public/assets/tree.png (420x156, 18 KB)`, or `size` with `--json`), so read sizes and aspect ratios from there instead of opening every file. See `codex-img batch --help` for the spec format.
+For a set of assets, such as a game's art, keep them in a JSON spec and run `codex-img batch spec.json [key or folder...]` instead of scripting many calls. Each asset has a prompt, generation fields (`aspect: "3:2"` for the shape) and `convert` options with underscores (`hard_alpha`, `max: [W, H]`). The spec also has a shared `style` appended to every prompt, `defaults`, and `reference` keys for edits of another asset's raw image. `batch` generates only missing raw images (delete one to re-roll it) and converts all of them, rewriting only files that changed. Run `--dry-run` first to see what would be generated, because that uses quota. `--convert-only` needs no login. Each convert line reports the output's final size (`-> public/assets/tree.png (420x156, 18 KB)`, or `size` with `--json`), so read sizes and aspect ratios from there instead of opening every file. See `codex-img batch --help` for the spec format.
 
 ## Workflow
 
 1. Write the prompt (see below). Save to the path the user wants, or to a sensible project location such as `assets/`. Don't clutter the repo root.
-2. Run with `--json`, and allow a timeout of at least 5 minutes: a single image usually takes 20–60s. stdout has one JSON line per image, with `path`, `size`, `durationMs` and more. Progress goes to stderr. A `warning:` line on stderr means the file was saved under a different extension than requested, or unprocessed (for example `--trim` found nothing visible), or that the `.raw` original couldn't be kept; use the `path` from the JSON.
+2. Run with `--json`, and allow a timeout of at least 5 minutes: a single image usually takes 20–60s. stdout has one JSON line per image, with `path`, `size`, `durationMs` and more. Progress goes to stderr. A `warning:` line on stderr means the file was saved under a different extension than requested, or unprocessed (for example `--trim` found nothing visible), or that the `.raw` original couldn't be kept, or that the frame came back off the `-a` ratio; use the `path` from the JSON.
 3. **Look at the result** (open or read the image file) before reporting back. Check that it matches the request, especially any text, counts and composition.
 4. To refine, run again with the previous output as `-i` and a prompt that changes one thing ("change only X; keep everything else unchanged").
 
@@ -103,9 +105,10 @@ If `python3` is missing as well, tell the user rather than trying another image 
 
 ## Behaviour to expect
 
-- `-s` is a hint. The backend picks the final pixels: a `1536x1024` request has come back at 1536x1024 and also at 1370x1148, and square usually comes back around 1254x1254. Also state the shape in the prompt ("wide landscape"), check `size` in the JSON, and if you need exact dimensions, resize or crop afterwards (for example with `sips -z 1024 1024 in.png --out out.png` on macOS, or ImageMagick) and say so.
-- Edits keep the input image's framing and aspect ratio, and change only what the prompt asks for.
-- The backend chooses the image model; `codex-img` can't pick one, and naming a model such as "Images 2.5" in the prompt doesn't select it. `size` and `quality` in the JSON are what the backend reported.
+- The prompt sets the shape, and `-s` doesn't: in tests a portrait and a landscape `-s` both came back nearly square. Use `-a W:H` whenever the shape matters, check `size` in the JSON, and if you need exact dimensions, add `--resize WxH --fit cover` (with the fallback script: `sips -z H W in.png --out out.png` on macOS, or ImageMagick) and say so.
+- With `-a`, the backend has reported `quality: low` and used fewer image tokens, but the images looked as detailed as without it. Don't treat that `low` as a failure.
+- Edits keep the input image's framing and aspect ratio unless you pass `-a`, which reframes the scene around the subject. They change only what the prompt asks for.
+- The backend chooses the image model; `codex-img` can't pick one, and naming a model such as "Images 2.5" in the prompt doesn't select it. `size` and `quality` in the JSON are what the backend reported. Other tools advertise image-model and quality options for this backend; on this endpoint they made no visible difference.
 - Leave `--via-responses` and `--model` alone. They're a fallback route that rewrites the prompt and ignores `--size`; use them only if the default route is failing.
 
 ## Writing prompts
