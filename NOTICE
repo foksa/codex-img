@@ -8,3 +8,6 @@ Copyright Jose Mocito, licensed under the Apache License, Version 2.0.
 vendor/exoquant is exoquant 0.2.0 (https://github.com/exoticorn/exoquant-rs), Copyright (c) 2016
 Dennis Ranke, licensed under the MIT License (vendor/exoquant/LICENSE). Its histogram was changed
 to iterate in a fixed order; see vendor/exoquant/VENDORED.md.
+
+skills/codex-img/references/prompting.md adapts prompting guidance from the imagegen skills in
+pi-codex-image-gen and in OpenAI Codex, both licensed under the Apache License, Version 2.0.

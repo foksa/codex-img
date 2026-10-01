@@ -113,11 +113,13 @@ If `python3` is missing as well, tell the user rather than trying another image 
 Order: scene/background → subject → key details → constraints → intended use.
 
 - Say what the image is for ("App Store icon", "hero image for a landing page", "product photo for a catalogue"). That sets the level of polish.
+- For a prompt with several requirements, use short labeled lines (`Subject:`, `Style/medium:`, `Text (verbatim):`, `Avoid:` ...) instead of one long paragraph. The template is in the reference below.
 - If the user's request is already detailed, pass it through cleanly. If it's vague, add only framing, lighting and style cues. Don't add characters, props, slogans or brand colours that weren't implied.
 - Text in the image: put the exact words in quotes, specify font style, colour and placement, and ask for "verbatim, no extra text". Check the spelling in the result.
 - Edits: "Change only <X>. Keep <Y> unchanged." Repeat the things that must stay the same on every iteration.
-- Several inputs: label them by role ("Image 1: the product to keep; Image 2: style reference only").
+- Several inputs: label them by role ("Image 1: the product to keep; Image 2: style reference only"). An `-i` image isn't always the thing to edit: images given only for style or mood mean a new image.
+- Room for copy or UI: ask for negative space, but don't choose a side unless the layout needs one.
 - Photorealism: say `photorealistic`, and add camera and lighting language plus real-world texture.
 - Transparent assets: use `-b transparent -o x.png`, and ask for a clean isolated subject with no background, shadow or floor.
 
-More recipes by use case: [references/prompting.md](references/prompting.md).
+The labeled-line template, how much detail to add, and recipes by use case (slides, wireframes, character consistency, edits): [references/prompting.md](references/prompting.md).
