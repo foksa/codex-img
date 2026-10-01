@@ -40,7 +40,12 @@ You need to be logged in once with `codex login` (ChatGPT sign-in). `codex-img s
 
 ## For agents
 
-`skills/codex-img/SKILL.md` is an Agent Skill. Claude Code, Codex and other skill-aware agents load it automatically when a task involves making or editing an image. It covers the commands to run, when to spend quota, how to handle each exit code (don't retry auth or quota errors), and prompt-writing tips. Longer recipes are in `skills/codex-img/references/prompting.md`.
+`skills/codex-img/SKILL.md` is an Agent Skill. Claude Code, Codex and other skill-aware agents load it automatically when a task involves making or editing an image. It covers the commands to run, when to spend quota, how to handle each exit code (don't retry auth or quota errors), and prompt-writing tips. It stays short and points to references that an agent opens only when a task needs them:
+
+- `prompting.md`: prompt recipes
+- `game-assets.md`: sprites, views, characters, palettes, `batch`, `sheet` and `tile`
+- `convert.md`: local conversion and background removal
+- `fallback.md`: the Python script's limits
 
 When the binary isn't installed, the skill falls back to `skills/codex-img/scripts/codex_img.py`. It's a standard-library-only Python 3.9+ script with the same flags, exit codes and `--json` output, but it only covers the direct route and only writes PNG: there's no JPEG/WebP conversion, no quantization and no `--via-responses`. Agents can convert the output themselves. That makes the skill folder usable on its own, just by copying it into `~/.claude/skills/` or `~/.codex/skills/`.
 
