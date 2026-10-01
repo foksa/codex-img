@@ -11,3 +11,8 @@ to iterate in a fixed order; see vendor/exoquant/VENDORED.md.
 
 skills/codex-img/references/prompting.md adapts prompting guidance from the imagegen skills in
 pi-codex-image-gen and in OpenAI Codex, both licensed under the Apache License, Version 2.0.
+
+The built-in palettes in skills/codex-img/scripts/presets.json list colour values as published on
+Lospec (https://lospec.com/palette-list): Sweetie 16 by GrafxKid, DawnBringer 16 and DawnBringer 32
+by DawnBringer, Endesga 32 by ENDESGA, Resurrect 64 by Kerrie Lake, AAP-64 by Adigun A. Polack,
+and the PICO-8, NES, Commodore 64, ZX Spectrum, CGA and EGA hardware palettes.

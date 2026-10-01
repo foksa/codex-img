@@ -71,7 +71,7 @@ Options:
   -v, --version             Show version
 
 Output is always PNG. Not supported here: --style, --character and your own views (presets),
---manifest, -f/--format, -c/--colors, --dither,
+--palette, --manifest, -f/--format, -c/--colors, --dither,
 --output-quality, --lossless, --trim, --resize, --fit, --hard-alpha, --no-enlarge, --no-bleed,
 --via-responses, --model.
 Exit codes: 0 ok, 1 error, 2 auth, 3 quota, 4 moderation, 64 usage."""
@@ -114,8 +114,8 @@ def aspect_sentence(aspect):
 
 
 def builtin_views():
-    """The views the binary has built in; views.json is shared with it."""
-    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "views.json"), encoding="utf-8") as f:
+    """The views the binary has built in; presets.json is shared with it."""
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "presets.json"), encoding="utf-8") as f:
         return json.load(f)["views"]
 
 
@@ -166,7 +166,7 @@ def parse(args):
         "--style-ref": "style-ref", "--character-ref": "character-ref", "--composition-ref": "composition-ref", "-q": "quality", "--quality": "quality",
         "-b": "background", "--background": "background", "-n": "count", "--count": "count",
     }
-    unsupported = {"--style", "--character", "--manifest", "-f", "--format", "--via-responses", "-m", "--model", "-c", "--colors", "--dither",
+    unsupported = {"--style", "--character", "--manifest", "--palette", "--palette-clean", "-f", "--format", "--via-responses", "-m", "--model", "-c", "--colors", "--dither",
                    "--output-quality", "--lossless", "--trim", "--resize", "--fit", "--hard-alpha", "--no-enlarge", "--no-bleed"}
     flags = {"--json": "json", "--quiet": "quiet", "-h": "help", "--help": "help", "-v": "version", "--version": "version"}
     values, seen, positionals = {"image": [], "refs": []}, set(), []

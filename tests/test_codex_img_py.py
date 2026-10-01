@@ -143,7 +143,7 @@ class Test(unittest.TestCase):
         self.assertEqual((path, len(body["images"])), ("/images/edits", 3))
         self.assertEqual(body["prompt"], f"Camera: {ci.builtin_views()['side']}\n\n"
                          f"Image 2: {ci.ROLE_LABELS['style']}\nImage 3: {ci.ROLE_LABELS['composition']}\n\na lamp")
-        for args in (["x", "--view", "diagonal"], ["x", "--style", "pixel"], ["x", "--character", "cap"], ["x", "--manifest"],
+        for args in (["x", "--view", "diagonal"], ["x", "--style", "pixel"], ["x", "--character", "cap"], ["x", "--manifest"], ["x", "--palette", "#000000,#FFFFFF"],
                      ["x"] + ["--style-ref", ref] * 6):
             self.assertEqual(self.run_cli(*args)[0], 64, args)
         self.assertEqual(len(Server.requests), 1)

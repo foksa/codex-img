@@ -60,6 +60,7 @@ Spec:
     "views": {...},         presets of this spec, as in codex-img.json (see
     "styles": {...},        `codex-img presets --help`); they win over the
     "characters": {...},    project's and global ones
+    "palettes": {...},
     "defaults": {...},      fields every asset gets unless it sets them itself
     "assets": {
       "trees/oak": {"prompt": "...", "aspect": "3:2", "max": "420x380"},
@@ -76,6 +77,9 @@ Asset fields (in an asset, null or false turns a default off):
                             and character can be lists)
   style_ref, character_ref, Reference images with a role, as the --*-ref options;
   composition_ref           relative to the spec
+  palette, palette_clean    As --palette and --palette-clean: hex codes (a string or a
+                            list), a file relative to the spec, or a palette preset.
+                            The hex codes join the prompt; conversion snaps to them
   reference                 Key(s) whose raw image is passed as -i; generated first
   images                    Other -i files, relative to the spec
   publish                   false: generate only, e.g. a reference for other assets
@@ -198,9 +202,9 @@ impl Spec {
     }
 }
 
-const TOP_FIELDS: [&str; 8] = ["raw_dir", "out_dir", "style", "defaults", "assets", "views", "styles", "characters"];
-const ASSET_FIELDS: [&str; 31] = [
-    "prompt", "size", "aspect", "view", "style", "character", "style_ref", "character_ref", "composition_ref", "quality", "background", "reference", "images", "publish", "format", "colors", "dither", "output_quality", "lossless", "trim",
+const TOP_FIELDS: [&str; 9] = ["raw_dir", "out_dir", "style", "defaults", "assets", "views", "styles", "characters", "palettes"];
+const ASSET_FIELDS: [&str; 33] = [
+    "prompt", "size", "aspect", "view", "style", "character", "style_ref", "character_ref", "composition_ref", "palette", "palette_clean", "quality", "background", "reference", "images", "publish", "format", "colors", "dither", "output_quality", "lossless", "trim",
     "hard_alpha", "resize", "max", "fit", "no_enlarge", "no_bleed", "key", "key_region", "key_cut", "key_spread", "trim_density",
 ];
 
@@ -246,7 +250,7 @@ fn parse_spec(value: &Value, base: &Path, files: &PresetFiles) -> Result<Spec> {
         return Err(Error::usage("defaults can't set prompt or reference."));
     }
     let entries = top.get("assets").and_then(Value::as_object).ok_or_else(|| Error::usage("assets must be an object of key -> asset."))?;
-    let names = |object: &Map<String, Value>| ["view", "style", "character"].iter().any(|f| object.get(*f).is_some_and(|v| !v.is_null() && *v != Value::Bool(false)));
+    let names = |object: &Map<String, Value>| ["view", "style", "character", "palette"].iter().any(|f| object.get(*f).is_some_and(|v| !v.is_null() && *v != Value::Bool(false)));
     let named = names(defaults) || entries.values().filter_map(Value::as_object).any(names);
     let library = Library::load(Some((top, base)), files.project.as_deref().filter(|_| named), files.global.as_deref().filter(|_| named))?;
     let keys: Vec<&str> = entries.keys().map(String::as_str).collect();
@@ -375,12 +379,21 @@ fn parse_asset(key: &str, fields: &Fields, style: Option<&str>, keys: &[&str], b
         style_refs: refs("style_ref")?,
         character_refs: refs("character_ref")?,
         composition_refs: refs("composition_ref")?,
+        palette: match fields.strings("palette")?.join(" ") {
+            spec if spec.is_empty() => None,
+            spec => Some(crate::palette::resolve(&spec, base, || Ok(library.clone()))?),
+        },
     };
+    let palette_clean = fields.flag("palette_clean")?;
+    if palette_clean && setup.palette.is_none() {
+        return Err(Error::usage("palette_clean only applies with a palette."));
+    }
     let composed = presets::compose(&user_prompt, style, &setup, library, references.len() + images.len()).map_err(|e| {
         let hint = if e.message.starts_with("Unknown style") { " For text that ends every prompt, use the spec's top-level style." } else { "" };
         Error::usage(format!("{}{hint}", e.message))
     })?;
     let prompt = composed.prompt;
+    let palette = setup.palette.clone().map(|colors| transform::PaletteFit { colors, clean: palette_clean });
     if prompt.chars().count() > cli::MAX_PROMPT_CHARS {
         return Err(Error::usage("the prompt (with the style, presets and aspect) is longer than 32,000 characters."));
     }
@@ -426,7 +439,9 @@ fn parse_asset(key: &str, fields: &Fields, style: Option<&str>, keys: &[&str], b
         fit: fields.string("fit")?.map(|v| Fit::parse(&v)).transpose()?,
         no_bleed: fields.flag("no_bleed")?,
         no_enlarge,
+        palette,
     };
+    transform.check_output(Some(format), &encoding)?;
     transform.check()?;
     Ok(Asset { key: key.to_string(), prompt, user_prompt, size, aspect, role_images: composed.images, used: composed.used, quality, background, references, images, publish, format, encoding, transform })
 }
@@ -1150,6 +1165,12 @@ mod tests {
         assert!(hero.prompt.contains("The character \"captain\": a walrus sailor") && hero.prompt.ends_with("The captain waves. Ink wash. No text."));
         assert_eq!(spec.assets[0].prompt, "A pier. No text.", "null turns a default preset off");
         assert!(parse_spec(&json!({"defaults": {"style": "16-bit pixel art"}, "assets": {"a": {"prompt": "x"}}}), &dir, &files).unwrap_err().message.contains("top-level style"));
+        let palettes = parse_spec(&json!({"palettes": {"warm": ["#2B1D14", "#F2C14E"]}, "assets": {"a": {"prompt": "A.", "palette": "warm", "palette_clean": true}, "b": {"prompt": "B.", "palette": "game-boy"}}}), &dir, &files).unwrap();
+        assert!(palettes.assets[0].prompt.ends_with("A. Use only these 2 colours, exactly, and no others: #2B1D14, #F2C14E. No gradients, no colours in between."));
+        assert_eq!(palettes.assets[0].transform.palette.as_ref().map(|p| (p.colors.len(), p.clean)), Some((2, true)));
+        assert_eq!(palettes.assets[1].transform.palette.as_ref().map(|p| p.colors.len()), Some(4), "a built-in palette");
+        assert!(parse_spec(&json!({"assets": {"a": {"prompt": "A.", "palette": "warm", "colors": 8}}}), &dir, &files).unwrap_err().message.contains("Unknown palette"));
+        assert!(parse_spec(&json!({"assets": {"a": {"prompt": "A.", "palette": "#000000 #FFFFFF", "colors": 8}}}), &dir, &files).unwrap_err().message.contains("--colors and --palette"));
 
         let (backend, captured) = serve(vec![(200, "application/json", direct_response()), (200, "application/json", direct_response())]);
         let mut opts = options(&[]);

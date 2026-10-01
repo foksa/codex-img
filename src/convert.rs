@@ -91,6 +91,19 @@ Options:
                             become its bottom edge. Other edges: top:0.15,
                             bottom,left:0.15, all:0.15 (careful: a thin mast, pole or
                             trunk is sparse too)
+      --palette <colours>   Snap every colour to a palette: '#2B1D14,#6B3E26,...', a
+                            .gpl/.hex file, a swatch image, or a palette preset
+                            (built in: pico-8, game-boy, nes, c64, sweetie-16,
+                            resurrect-64 and more; `codex-img presets` lists them).
+                            Alpha is hardened (at 127 unless --hard-alpha says
+                            otherwise), stray pixels are cleaned at full size, and
+                            the colours are snapped again after --resize, so the
+                            output has exactly the palette's colours. PNG output
+                            is a palette PNG; WebP needs --lossless
+      --palette-clean       Stronger cleanup, for art not generated with the
+                            palette: reduce to 32 colours, then match hue before
+                            lightness, so shading between palette colours doesn't
+                            turn into speckles and streaks of another hue
       --no-bleed            Keep the colour stored under fully transparent pixels.
                             By default PNG and lossless webp output gets the nearest
                             visible colour there, so filtering in game engines and
@@ -117,6 +130,7 @@ Examples:
 
 pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
     let mut opts = ConvertOptions { inputs: Vec::new(), output: None, format: None, encoding: images::Encoding::default(), transform: Transform::default(), json: false, quiet: false, force: false };
+    let (mut palette, mut palette_clean) = (None, false);
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         if arg == "--" {
@@ -155,6 +169,8 @@ pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
                 opts.transform.hard_alpha =
                     Some(inline.as_deref().map(transform::parse_hard_alpha).transpose()?.unwrap_or(transform::FAINT_ALPHA))
             }
+            "--palette" => palette = Some(value()?),
+            "--palette-clean" => palette_clean = true,
             "--json" => opts.json = true,
             "--quiet" => opts.quiet = true,
             "--force" => opts.force = true,
@@ -173,8 +189,18 @@ pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
         let ext = Path::new(opts.output.as_deref().unwrap_or_default()).extension().and_then(|e| e.to_str()).unwrap_or_default();
         opts.format = Some(Format::parse(ext).ok_or_else(|| Error::usage("Can't tell the output format from -o; add -f png|jpeg|webp."))?);
     }
+    if palette_clean && palette.is_none() {
+        return Err(Error::usage("--palette-clean only applies with --palette."));
+    }
+    if let Some(spec) = palette {
+        let cwd = std::env::current_dir().map_err(|e| Error::other(format!("No current folder: {e}")))?;
+        let places = crate::presets::Places { cwd: cwd.clone(), global_dir: crate::presets::global_dir() };
+        let colors = crate::palette::resolve(&spec, &cwd, || places.library())?;
+        opts.transform.palette = Some(transform::PaletteFit { colors, clean: palette_clean });
+    }
     // Without -f/-o the format comes from each input; convert_one checks again then.
     opts.encoding.check(opts.format)?;
+    opts.transform.check_output(opts.format, &opts.encoding)?;
     opts.transform.check()?;
     Ok(Some(opts))
 }
@@ -224,6 +250,7 @@ fn convert_one(input: &Path, opts: &ConvertOptions) -> Result<serde_json::Value>
     let format = opts.format.unwrap_or(actual);
     // parse() can only check -f/-o; without them the output takes the input's format.
     opts.encoding.check(Some(format)).map_err(|e| Error::usage(format!("{}: {}", input.display(), e.message)))?;
+    opts.transform.check_output(Some(format), &opts.encoding).map_err(|e| Error::usage(format!("{}: {}", input.display(), e.message)))?;
     let target = target_path(input, opts.output.as_deref(), format);
     if same_file(&target, input) {
         return Err(Error::usage(format!("Output would overwrite the input {}; choose another -o.", input.display())));

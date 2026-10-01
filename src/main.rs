@@ -6,6 +6,7 @@ mod convert;
 mod error;
 mod images;
 mod manifest;
+mod palette;
 mod presets;
 mod sheet;
 mod tile;
@@ -101,12 +102,14 @@ fn generate(mut opts: Options) -> Result<i32> {
         return Err(Error::usage("Image prompt must contain 1 to 32,000 characters."));
     }
     // Preset files are read only when a preset is named, so a broken one can't stop plain runs.
-    let library = if opts.setup.names_presets() {
-        let cwd = std::env::current_dir().map_err(|e| Error::other(format!("No current folder: {e}")))?;
-        presets::Places { cwd, global_dir: presets::global_dir() }.library()?
-    } else {
-        presets::Library::builtin()
-    };
+    let cwd = std::env::current_dir().map_err(|e| Error::other(format!("No current folder: {e}")))?;
+    let places = presets::Places { cwd: cwd.clone(), global_dir: presets::global_dir() };
+    let library = if opts.setup.names_presets() { places.library()? } else { presets::Library::builtin() };
+    if let Some(spec) = &opts.palette {
+        let colors = palette::resolve(spec, &cwd, || places.library())?;
+        opts.transform.palette = Some(transform::PaletteFit { colors: colors.clone(), clean: opts.palette_clean });
+        opts.setup.palette = Some(colors);
+    }
     let composed = presets::compose(&opts.prompt, None, &opts.setup, &library, opts.images.len())?;
     let user_prompt = std::mem::replace(&mut opts.prompt, composed.prompt.clone());
     if opts.prompt.chars().count() > cli::MAX_PROMPT_CHARS {
@@ -115,6 +118,7 @@ fn generate(mut opts: Options) -> Result<i32> {
     let format = opts.format.unwrap_or(Format::Png);
     // parse() couldn't check against the default format; do it before spending quota.
     opts.encoding.check(Some(format))?;
+    opts.transform.check_output(Some(format), &opts.encoding)?;
     cli::check_output(opts.output.as_deref(), format, opts.count, &opts.transform, opts.manifest)?;
     let quiet = opts.quiet;
     let log = move |message: &str| {
