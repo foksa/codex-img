@@ -53,10 +53,10 @@ Avoid: <what must not appear>
 - Check the spelling in the result. If text keeps coming out wrong, generate without it and add the text in code.
 
 ## Input images
-- `-i` works both for edits and for references; the prompt decides which. Don't assume every input is the thing to edit.
-- Label each input by index and role: "Image 1: edit target; Image 2: style reference only".
-- Images given only for style, composition or mood mean a new image: describe the new subject and say what to take from each reference.
-- When the user wants an existing image kept and only part of it changed, it's an edit: "change only X; keep Y unchanged".
+- **Edit or reference?** When the user wants an existing image kept and only part of it changed, it's an edit. Pass the image with `-i` and say "change only X; keep Y unchanged".
+- **Images given only for style, composition or a character** mean a new image. Pass them with `--style-ref`, `--composition-ref` or `--character-ref`. Each gets a line in the prompt saying how to use it, so describe only the new subject and scene.
+- **A reference sets the output's frame and tends to carry its setting over.** A photo of an apple on a table as a style reference gave a fox on that table. Pass `-a` for another shape, and describe the new background.
+- **Numbering:** `-i` images come first and keep their numbers (Image 1, Image 2…), so refer to them by number in the prompt. Role references are numbered after them.
 
 ## Generate
 - **Photorealistic:** write it as if describing a real photo taken in the moment. Include lens, lighting and framing, plus real texture (pores, fabric wear, material grain). Avoid over-polished "render" language unless that's what the user wants.
@@ -70,32 +70,19 @@ Avoid: <what must not appear>
 - **Stylized concept:** name the style cues, material finish and rendering approach (3D, painterly, clay, flat vector) without inventing new story elements.
 - **Historical scene:** give the place and date, and keep clothing, props and setting accurate to the period ("no modern objects").
 - **Transparent asset (sticker, sprite, cutout):** use `-b transparent`. Ask for a single isolated subject, crisp edges, generous padding, and no shadow, floor, reflection or background.
-- **Game camera angles: use `--view`.** One preset per game keeps every sprite in the same perspective; wording that varies from prompt to prompt drifts.
-
-  | Game | View |
-  |---|---|
-  | Pseudo-3D racer roadside, side-scroller, platformer | `side` (or `front` for objects facing the player) |
-  | Top-down racer or shooter, map tiles, board pieces | `top-down` |
-  | Classic RPG towns and characters | `three-quarter` |
-  | City builder, strategy, isometric tiles | `isometric` |
-
-  Why it matters: "front view at a slight angle" or "standing on a dock" gives a visible top surface, which in a low-camera game looks like the ground sloping up behind the object. `side` and `front` ask for a flat elevation with no top surface and a straight bottom edge. Still say "no platform, no dock, no ground" for things that usually stand on something. Boats and docks tend to come with painted sea anyway; remove it with `convert --key auto` (see SKILL.md). If none of these fit, define the project's own view once: `codex-img presets add view <name> --text "..."`.
+- **Game sprites, camera angles, characters, palettes and sets:** see [game-assets.md](game-assets.md). In short:
+  - Use `--view` for the camera angle.
+  - Use `--character` with a preset that holds only the character's looks.
+  - Use `--palette` with hex codes; the model doesn't know a palette by name.
 - **Tileable texture:** "seamless tileable texture, no focal point, even lighting". Check it by placing copies side by side. For a panorama that must wrap left to right, use `codex-img tile` instead.
-- **A fixed palette:** pass it with `--palette` rather than in your own words. It sends the hex codes, which the model follows closely (a palette's name alone, like "PICO-8", it doesn't know), and then snaps the colours exactly. Keep other colour words in the prompt consistent with the palette (no "red gem" with a palette that has no red).
-- **A set of assets:** append one shared style sentence to every prompt (palette, pixel size or rendering, outline, lighting). That kept 80+ sprites of one game consistent without a style reference image. Review the set with `codex-img sheet`.
-- **The same character in a new scene:**
-  1. Make one clean anchor image of the character.
-  2. Save it as a preset whose text is only the character's looks: `codex-img presets add character <name> --ref anchor.png --text "a stocky walrus captain with big tusks, yellow raincoat, white captain's hat"`.
-  3. Use `--character <name>` with a prompt that describes the scene and action. The reference is labelled and the looks are added for you.
-
-  Keep the preset text free of poses, backgrounds and "isolated on ..." wording, which would leak into every scene. For a one-off, `--character-ref anchor.png` does the same without a preset.
+- **A set of assets:** append one shared style sentence to every prompt (palette, pixel size or rendering, outline, lighting), or use a style preset. That kept 80+ sprites of one game consistent without a style reference image. Review the set with `codex-img sheet`.
 
 ## Edit
 - **Text localization:** change only the text. Keep layout, typography, spacing and hierarchy. List each old → new string.
 - **Keeping a person's identity:** lock face, body, pose, hair and expression, and change only the named elements. Match the lighting.
 - **Precise object edit:** say exactly what to remove or replace, keep the surrounding texture and lighting, and leave everything else unchanged.
 - **Lighting or weather:** change only light, shadows, atmosphere and precipitation. Keep geometry, framing and subject.
-- **Background removal:** use `-b transparent` with the photo as `-i`, and ask to keep the subject's edges and any label text exactly, with no halo and no restyling. Check that the result really has transparency; if a background was painted in instead, remove it with `convert --key` (see SKILL.md).
+- **Background removal:** use `-b transparent` with the photo as `-i`, and ask to keep the subject's edges and any label text exactly, with no halo and no restyling. Check that the result really has transparency; if a background was painted in instead, remove it with `convert --key` (see [convert.md](convert.md#removing-a-painted-in-background)).
 - **Style transfer:** say which style cues to take (palette, texture, brushwork) and add "no extra elements".
 - **Compositing:** refer to inputs by index, say what moves where, and match perspective, scale and lighting.
 - **Sketch to render:** keep the layout, proportions and perspective of the sketch, and add materials and lighting only.
