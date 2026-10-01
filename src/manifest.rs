@@ -49,14 +49,7 @@ pub fn build(record: &Record, image: &Generated, shown: &dyn Fn(&Path) -> String
         let presets: Vec<Value> = record.used.iter().map(|(kind, name, source)| json!({"kind": kind.name(), "name": name, "source": source.name()})).collect();
         out.insert("presets".into(), json!(presets));
     }
-    let mut request = Map::new();
-    let aspect = record.aspect.map(|a| format!("{}:{}", a.width, a.height));
-    for (key, value) in [("aspect", aspect.as_deref()), ("size", record.size), ("quality", record.quality), ("background", record.background)] {
-        if let Some(value) = value {
-            request.insert(key.into(), json!(value));
-        }
-    }
-    out.insert("request".into(), Value::Object(request));
+    out.insert("request".into(), request(record.aspect, record.size, record.quality, record.background));
     let inputs: Vec<Value> = record
         .inputs
         .iter()
@@ -90,6 +83,18 @@ pub fn build(record: &Record, image: &Generated, shown: &dyn Fn(&Path) -> String
     Value::Object(out)
 }
 
+/// The request settings as the manifest records them: only the ones that were set.
+pub fn request(aspect: Option<Aspect>, size: Option<&str>, quality: Option<&str>, background: Option<&str>) -> Value {
+    let mut request = Map::new();
+    let aspect = aspect.map(|a| format!("{}:{}", a.width, a.height));
+    for (key, value) in [("aspect", aspect.as_deref()), ("size", size), ("quality", quality), ("background", background)] {
+        if let Some(value) = value {
+            request.insert(key.into(), json!(value));
+        }
+    }
+    Value::Object(request)
+}
+
 pub fn write(path: &Path, manifest: &Value) -> Result<()> {
     let text = serde_json::to_string_pretty(manifest).map_err(|e| Error::other(e.to_string()))? + "\n";
     cli::write_output(path, text.as_bytes(), true).map(|_| ())
@@ -99,10 +104,10 @@ pub fn read(path: &Path) -> Option<Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
-/// Whether `prompt` or an input differs from what `manifest` recorded. Inputs are compared by
-/// fingerprint, so a re-rolled reference counts as a change.
-pub fn changed(manifest: &Value, prompt: &str, inputs: &[PathBuf]) -> bool {
-    if manifest.get("prompt").and_then(Value::as_str) != Some(prompt) {
+/// Whether `prompt`, the `request` settings (from `request`) or an input differs from what
+/// `manifest` recorded. Inputs are compared by fingerprint, so a re-rolled reference counts as a change.
+pub fn changed(manifest: &Value, prompt: &str, request: &Value, inputs: &[PathBuf]) -> bool {
+    if manifest.get("prompt").and_then(Value::as_str) != Some(prompt) || manifest.get("request") != Some(request) {
         return true;
     }
     let recorded: Vec<Option<&str>> = manifest.get("inputs").and_then(Value::as_array).map_or_else(Vec::new, |list| list.iter().map(|i| i.get("fingerprint").and_then(Value::as_str)).collect());
@@ -147,10 +152,13 @@ mod tests {
         assert_eq!(path, dir.join("fox.png.json"));
         write(&path, &manifest).unwrap();
         let back = read(&path).unwrap();
-        assert!(!changed(&back, "Camera: side.\n\nA fox.", std::slice::from_ref(&reference)));
-        assert!(changed(&back, "A fox.", std::slice::from_ref(&reference)), "the prompt changed");
-        assert!(changed(&back, "Camera: side.\n\nA fox.", &[]), "an input was dropped");
+        let same = request(Some(Aspect { width: 2, height: 3 }), None, None, Some("transparent"));
+        assert!(!changed(&back, "Camera: side.\n\nA fox.", &same, std::slice::from_ref(&reference)));
+        assert!(changed(&back, "A fox.", &same, std::slice::from_ref(&reference)), "the prompt changed");
+        let opaque = request(Some(Aspect { width: 2, height: 3 }), None, None, Some("opaque"));
+        assert!(changed(&back, "Camera: side.\n\nA fox.", &opaque, std::slice::from_ref(&reference)), "the background changed");
+        assert!(changed(&back, "Camera: side.\n\nA fox.", &same, &[]), "an input was dropped");
         std::fs::write(&reference, b"two").unwrap();
-        assert!(changed(&back, "Camera: side.\n\nA fox.", &[reference]), "the reference was re-rolled");
+        assert!(changed(&back, "Camera: side.\n\nA fox.", &same, &[reference]), "the reference was re-rolled");
     }
 }
