@@ -127,8 +127,24 @@ class Test(unittest.TestCase):
         self.assertEqual(Server.requests[0][2], {"prompt": "The frame must be in 2:3 portrait format, taller than it is wide.\n\na fox", "model": "gpt-image-2"})
         self.assertIn("warning: asked for 2:3 but the backend returned 1x1", stderr)
         self.assertEqual(ci.aspect_mismatch((16, 9), (1672, 941)), None)
-        self.assertTrue(ci.frame((1, 1), "x").startswith("The frame must be in 1:1 square format"))
+        self.assertEqual(ci.aspect_sentence((1, 1)), "The frame must be in 1:1 square format, as wide as it is tall.")
         for args in (["x", "-a", "16x9"], ["x", "-a", "4:1"], ["x", "-a", "2:3", "-s", "1024x1536"]):
+            self.assertEqual(self.run_cli(*args)[0], 64, args)
+        self.assertEqual(len(Server.requests), 1)
+
+    def test_view_and_reference_roles_compose_like_the_binary(self):
+        ref = os.path.join(self.dir, "ref.png")
+        with open(ref, "wb") as f:
+            f.write(PNG)
+        Server.responses = [self.ok()]
+        code, _, _ = self.run_cli("a lamp", "--view", "side", "-i", ref, "--style-ref", ref, "--composition-ref", ref, "-o", os.path.join(self.dir, "v.png"), "--quiet")
+        self.assertEqual(code, 0)
+        path, _, body = Server.requests[0]
+        self.assertEqual((path, len(body["images"])), ("/images/edits", 3))
+        self.assertEqual(body["prompt"], f"Camera: {ci.builtin_views()['side']}\n\n"
+                         f"Image 2: {ci.ROLE_LABELS['style']}\nImage 3: {ci.ROLE_LABELS['composition']}\n\na lamp")
+        for args in (["x", "--view", "diagonal"], ["x", "--style", "pixel"], ["x", "--character", "cap"], ["x", "--manifest"],
+                     ["x"] + ["--style-ref", ref] * 6):
             self.assertEqual(self.run_cli(*args)[0], 64, args)
         self.assertEqual(len(Server.requests), 1)
 

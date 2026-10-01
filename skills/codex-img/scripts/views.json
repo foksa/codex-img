@@ -1,0 +1,9 @@
+{
+  "views": {
+    "side": "seen perfectly straight on from the side at eye level: a flat side elevation with no perspective and no top surface visible, its bottom edge a straight horizontal line, standing on nothing.",
+    "front": "seen perfectly straight on from the front at eye level: a flat front elevation with no perspective and no top surface visible, its bottom edge a straight horizontal line, standing on nothing.",
+    "top-down": "seen from directly overhead, a bird's-eye plan view looking straight down at 90 degrees, like a map: only the top of the subject is visible (for a building, only its roof; for a tree, only its crown), with no walls, no front or side faces, no horizon and no perspective.",
+    "three-quarter": "a classic three-quarter top-down view, as in 16-bit RPGs: the camera looks down at about 45 degrees with the subject's front square to the camera, not turned or rotated, so its top (a roof, a car's bonnet and roof) fills about half the height and its front face the rest; drawn orthographically, so vertical edges stay vertical and there is no vanishing point.",
+    "isometric": "a true isometric game view in 2:1 dimetric projection: the subject is turned 45 degrees so its top and two sides are visible, drawn orthographically, so parallel edges stay parallel and there is no vanishing point."
+  }
+}

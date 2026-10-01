@@ -13,6 +13,8 @@ description: Generate or edit raster images (PNG/JPEG/WebP) with the `codex-img`
 codex-img "<prompt>" -o <path> --json                  # generate
 codex-img "<prompt>" -a 16:9 -o <path> --json          # with a frame shape
 codex-img "<prompt>" -i <image> -o <path> --json       # edit / use as reference (repeat -i, max 5)
+codex-img "<prompt>" --view side -o <path> --json      # camera preset (side, front, top-down, three-quarter, isometric)
+codex-img "<prompt>" --character captain -o <path> --json   # named preset (also --style); `codex-img presets` lists them
 codex-img "<prompt>" -n 3 -o <dir>/ --json             # 3 variations in parallel (only if asked)
 codex-img status --json                                # check login, uses no quota
 codex-img convert <file>... [-o <path>] [-f fmt] [-c n] [--trim] [--resize WxH] --json   # convert/trim/resize, no quota
@@ -37,6 +39,22 @@ codex-img - -o out.png --json <<'EOF'
 multi-line prompt here, with "quotes" and $symbols
 EOF
 ```
+
+## Presets and reference roles
+
+- **Camera angle for game art: use `--view` instead of describing it.**
+  - `side` or `front`: flat elevations with no top surface and a straight bottom edge, for pseudo-3D roadside sprites and side-scrollers.
+  - `top-down`: straight down, for top-down racers, shooters and map tiles. Buildings may still show a sliver of wall.
+  - `three-quarter`: from above, front square to the camera, for classic RPGs.
+  - `isometric`: 2:1, turned 45°.
+  - The project may define its own views; check `codex-img presets`.
+- **Before writing style or character text by hand,** run `codex-img presets` (no quota). If the project defines what you need, use `--style <name>` and `--character <name>`, or the batch fields `view`, `style` and `character`. That keeps a set consistent.
+- **To keep a character across images,** make one clean anchor image. Then create a preset whose text describes only the character's looks: `codex-img presets add character <name> --ref <anchor.png> --text "<looks only>"`. Never use the anchor's whole prompt as the text: "isolated on a transparent background", or a pose, would end up in every scene. Then pass `--character <name>` and describe the scene. Add `--global` only when the user wants it in every project, and `presets promote` moves a project preset there later.
+- **A reference with a role, without a preset:** use `--style-ref`, `--character-ref` or `--composition-ref <image>` instead of `-i`. Each is labelled in the prompt for you, after the `-i` images, with at most 5 images in all.
+  - Any reference image sets the frame (pass `-a` for another shape).
+  - Its setting tends to carry over, so describe the new background.
+- **`--json` shows `submittedPrompt`,** the full prompt that was sent. Check it when a result surprises you.
+- **`--manifest`** writes `<image>.json` with that prompt, the presets and the inputs. `batch` always writes one beside each raw image, and its `skip` line says when the spec has changed since; delete the raw image to re-roll it.
 
 ## Converting, trimming and resizing existing images
 
@@ -100,6 +118,7 @@ python3 <skill-dir>/scripts/codex_img.py "<prompt>" -o <path>.png --json
 Its limits:
 - **PNG only.** It refuses `-f`, and any `-o` extension other than `.png`, before spending quota. If the user wants JPEG or WebP, or exact pixel dimensions, generate a PNG and then convert or resize it yourself (`sips`, ImageMagick, Pillow).
 - **No `-c`/`--dither` quantization, no `--output-quality`/`--lossless`, no `convert` subcommand (so no trim, resize or edge bleed), and no `--via-responses` or `--model`.**
+- **Presets:** only the built-in `--view`s and the `--*-ref` options; no `--style`, `--character`, project views, `presets` or `--manifest`.
 
 If `python3` is missing as well, tell the user rather than trying another image service. They can install the binary from the project's releases page.
 

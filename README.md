@@ -69,13 +69,17 @@ codex-img status --json                                     # login check, uses 
 | `--dither` | Dither while quantizing. Smooths gradients and photos, but makes files larger |
 | `-a, --aspect` | `W:H` from 1:3 to 3:1, such as `16:9`, `2:3` or `1:1`. Starts the prompt with "The frame must be in 16:9 landscape format, wider than it is tall.", which is what sets the shape (see [the backend](#the-backend)), and warns on stderr if the image comes back more than 2% off. Can't be combined with `--size`. For exact pixels, add `--resize WxH --fit cover` |
 | `-s, --size` | `WxH` or `auto`. Sent as the request's `size`, which the backend has ignored in tests; use `--aspect` |
+| `--view` | Camera preset: `side`, `front`, `top-down`, `three-quarter`, `isometric`, or one of your own. See [Presets](#presets-and-reference-roles) |
+| `--style`, `--character` | Named style and character presets (repeatable): their text goes into the prompt, their images are sent as labelled references |
+| `--style-ref`, `--character-ref`, `--composition-ref` | Reference images with a role (repeatable). They're sent after the `-i` images, max 5 images in all, and each gets a line in the prompt saying how to use it |
+| `--manifest` | Also writes `<image>.json`: the prompt sent, presets, inputs (with fingerprints) and what the backend reported |
 | `-q, --quality` | `low` \| `medium` \| `high` \| `auto` |
 | `-b, --background` | `transparent` \| `opaque` \| `auto` |
 | `--via-responses` | Fallback route: a routing model calls the `image_generation` tool through the Responses API. The prompt may be rewritten and `--size` is ignored |
 | `-m, --model` | Routing model for `--via-responses` (default `gpt-5.5`) |
 | `--trim`, `--resize`, `--fit`, `--hard-alpha`, `--no-enlarge`, `--no-bleed` | Trim, resize, hard alpha and edge bleed before saving, as in [`convert`](#converting-existing-images). With `--trim`, `--resize` or `--hard-alpha` the untouched original is also kept as `<name>.raw.<ext>`, since quota was spent on it and there's no seed to regenerate it |
 | `-n, --count` | Images to generate in parallel (1–10). Each one is a separate request |
-| `--json` | Prints one JSON line per image: path, size, quality (the backend's), `outputQuality` (the JPEG/WebP quality codex-img applied, when it encoded lossily), revised prompt, usage, duration. After `--trim`, `--resize` or `--hard-alpha`: `size` is the saved file's, plus `rawSize` (the backend's), `rawPath` and `trim` |
+| `--json` | Prints one JSON line per image: path, size, `submittedPrompt` (when presets, labels or `--aspect` changed the prompt), quality (the backend's), `outputQuality` (the JPEG/WebP quality codex-img applied, when it encoded lossily), revised prompt, usage, duration. After `--trim`, `--resize` or `--hard-alpha`: `size` is the saved file's, plus `rawSize` (the backend's), `rawPath` and `trim` |
 | `--quiet` | No progress output on stderr |
 
 PNG output is always recompressed losslessly with oxipng. That roughly halves the backend's PNGs (946 KB → 462 KB in testing) without changing a visible pixel. The only pixels that change are fully transparent ones, which get the nearest edge colour (see edge bleed under [Converting existing images](#converting-existing-images); `--no-bleed` turns it off).
@@ -92,6 +96,62 @@ Which format to pick, from one generated 1536x1024 image (946 KB from the backen
 
 Paths go to stdout and progress goes to stderr, so the tool composes well in scripts and agent tools.
 Exit codes: `0` ok, `1` error, `2` auth, `3` quota, `4` moderation, `64` usage.
+
+### Presets and reference roles
+
+Presets name the parts of a prompt you'd otherwise repeat and let drift:
+
+- **Views** (camera): `side`, `front`, `top-down`, `three-quarter` and `isometric` are built in, and you can define your own.
+- **Styles:** text and, optionally, style reference images.
+- **Characters:** text and identity reference images, so one character keeps its looks across scenes.
+
+```sh
+codex-img "Game asset sprite: an old dockside crane. Isolated, no ground." --view side -b transparent -o crane.png
+codex-img presets add character captain --ref art/captain.png \
+    --text "a stocky walrus sea captain with big tusks, in a yellow raincoat and a white captain's hat"
+codex-img "The captain steering a ship's wheel in a storm." --character captain -a 3:2 -o storm.png
+codex-img "A fox." --style-ref art/style.png -a 1:1 -o fox.png      # a reference with a role, no preset
+codex-img presets                                                   # what's defined, and where
+```
+
+**The prompt that's sent** is put together in this order, and `--json` shows it as `submittedPrompt`:
+1. The `--aspect` sentence.
+2. `Camera:` followed by the view's text.
+3. One line per reference image. `-i` images come first and keep their numbers, so "Image 1" in your prompt still means the first `-i`.
+   - `Image 2: style reference only: take its palette, rendering and line work, not its subject or layout.`
+   - `Image 3: character reference for "captain": keep the same character (face, proportions, outfit, colours) in a new pose and scene.`
+   - `Image 4: composition reference only: follow its layout and framing, not its subject or style.`
+4. `The character "captain": <its text>`.
+5. Your prompt, then each style's text.
+
+**Where presets live.** The first of these that defines a name wins:
+1. a batch spec's own `views`, `styles` and `characters`
+2. the project: the nearest `codex-img.json` in the current folder or one above it
+3. global: `$XDG_CONFIG_HOME/codex-img/presets.json`, else `~/.config/codex-img/presets.json`
+4. the built-in views
+
+Preset files are only read when a preset is named, so a broken one can't stop a plain run. `codex-img presets` lists every preset with its source, and marks the ones another layer hides.
+
+```json
+{
+  "views": {"roadside": "seen straight on from the side at eye level, its bottom edge a straight line"},
+  "styles": {"harbour": {"text": "16-bit pixel art, bold colours", "refs": ["refs/boat.png"]}},
+  "characters": {"captain": {"text": "a stocky walrus sea captain", "refs": ["art/captain.png"]}}
+}
+```
+
+A string is short for `{"text": ...}`, and ref paths are relative to the file. Edit the file by hand, or use:
+
+| Command | |
+|---|---|
+| `presets add <kind> <name> [--text T] [--ref IMG]... [--global] [--force]` | Writes to the project's `codex-img.json` (created in the current folder if there's none), or the global file. A ref inside the project is stored as a relative path; one outside it is copied to `presets/<kind>/<name>/`. Global refs are always copied, to `refs/<kind>/<name>/` in the global folder. `--from IMG` is the same as `--ref IMG` |
+| `presets show <kind> <name>` | Text, refs (and whether they exist) and the file it's defined in |
+| `presets remove <kind> <name> [--global]` | Removes the entry, and the refs folder `add` made. Refs inside the project are never deleted |
+| `presets promote <kind> <name> [--force]` | Copies a project preset, refs included, to the global file |
+
+Give a character or style only the text that defines it. The text goes into every prompt that uses it, so a pose or "isolated on a transparent background" would end up in every scene too (see [the backend](#the-backend)).
+
+**The Python fallback** has the built-in views and the `--*-ref` options, but not named styles, characters or your own views.
 
 ### Converting existing images
 
@@ -211,6 +271,8 @@ codex-img batch art/assets.json --convert-only     # no login, no quota
 - **Keys** are paths: the raw image goes to `<raw_dir>/<key>.png` and the output to `<out_dir>/<key>.<format>`. Both directories are relative to the spec file, and default to `raw` and `out`.
 - **`style`** is appended to every prompt. One shared style sentence keeps a large set looking like one game.
 - **`defaults`** apply to every asset. An asset overrides them, and `null` or `false` turns one off, like the sky above.
+- **Presets:** `view`, `style` and `character` name presets, as the options of the same names do; `style` and `character` can be lists. `style_ref`, `character_ref` and `composition_ref` are reference images with a role, relative to the spec. The spec can define its own presets under top-level `views`, `styles` and `characters`, which win over the project's and global ones. The top-level `style` is still plain text appended to every prompt; an asset's `style` names a preset.
+- **Manifests:** each generated raw image gets `<key>.png.json` beside it, with the prompt sent, the presets, the inputs with fingerprints, and what the backend reported. When the spec or an input has changed since, the asset's `skip` line says so (`changed: true` with `--json`). The asset is never regenerated on its own, because that would spend quota; delete the raw image to re-roll it.
 - **Generation fields:** `prompt`, `aspect`, `size`, `quality`, `background`, `reference` (other keys whose raw images are passed as `-i`; they're generated first) and `images` (other `-i` files). `aspect` leads the prompt, ahead of the `style`, and a frame more than 2% off it is reported as a warning on the asset's line. `publish: false` generates an asset without converting it, for references.
 - **Conversion fields** are the `convert` options with underscores: `format`, `colors`, `dither`, `output_quality`, `lossless`, `trim`, `hard_alpha`, `resize`, `fit`, `no_enlarge`, `no_bleed`, `key`, `key_region`, `key_spread`, `key_cut` and `trim_density`. `max: [W, H]` is short for `resize` with `no_enlarge`.
 - **Validation:** the whole spec is checked before anything runs. An unknown field, a missing reference or a reference loop is an error that names the asset.
@@ -234,6 +296,9 @@ The Codex image endpoint isn't a public API, and nothing about its behaviour is 
 - **Quality** is capped at medium on the subscription. Prompts led by a ratio sentence came back reported as `low`, with fewer image tokens (343 for 2:3 and 301 for 16:9, against 829 without it), even with `-q medium`; the images still looked fully detailed. Why isn't known.
 - **The `model` field isn't checked.** Sending `gpt-image-2.5-sunburst` instead of `gpt-image-2` was accepted without an error, and gave the same size, quality and token count, so there's no sign it picked another model.
 - **Transparency.** `background: transparent` gives real alpha, but "solid" pixels come back at alpha 250–254 (`--hard-alpha` fixes that), and the model sometimes paints a background anyway (`--key` removes it).
+- **Views** (built-in camera presets, October 2026, flat-coloured game sprites of a cottage, a street lamp, a car and a tree). `side`, `front`, `isometric` and `top-down` came out as asked for the car and the tree, and `side`/`front` gave flat elevations for the cottage and the lamp. A building seen `top-down` still showed a sliver of its front wall. The first wording of `three-quarter` turned the cottage 45° (isometric-looking), and the first `top-down` gave a front view with a big roof; the built-in texts now say "front square to the camera, not turned" and "like a map: for a building, only its roof", which fixed both.
+- **Reference images become part of the scene.** Any input image goes to `/images/edits`, so the result takes that image's frame (a 2:3 style reference gave a 2:3 result; `-a` overrides it). A style reference photo of an apple on a table gave a fox on that same table: describe the new setting in the prompt. In two A/B pairs, the role labels made no visible difference next to a plain `-i`; they're there so several images can't be confused.
+- **Character text leaks into scenes.** A character preset whose text was a whole sprite prompt ("isolated on a transparent background, standing") gave scenes that faded to transparent at the edges. With only the character's looks as text, the same scenes filled the frame and the character kept its face, outfit and colours.
 - **Masks** are accepted and ignored: requests with and without one used the same number of input tokens. `tile` works around this.
 - **No seed.** An image can't be generated again exactly, which is why `codex-img` keeps the untouched original whenever it changes pixels.
 

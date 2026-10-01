@@ -64,6 +64,11 @@ pub fn random_unit() -> f64 {
     (u64::from_le_bytes(random_bytes::<8>()) >> 11) as f64 / (1u64 << 53) as f64
 }
 
+/// FNV-1a 64: a fingerprint to notice a changed file, not a security hash.
+pub fn fnv1a64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &b| (hash ^ b as u64).wrapping_mul(0x0100_0000_01b3))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,6 +79,11 @@ mod tests {
         assert_eq!(iso8601(1_767_323_045), "2026-01-02T03:04:05Z");
         assert_eq!(stamp(1_767_323_045), "20260102T030405");
         assert_eq!(iso8601(951_782_400), "2000-02-29T00:00:00Z");
+    }
+
+    #[test]
+    fn fnv1a64_matches_the_reference_values() {
+        assert_eq!((fnv1a64(b""), fnv1a64(b"a")), (0xcbf2_9ce4_8422_2325, 0xaf63_dc4c_8601_ec8c));
     }
 
     #[test]

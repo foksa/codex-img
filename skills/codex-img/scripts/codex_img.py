@@ -58,6 +58,10 @@ Options:
   -a, --aspect <W:H>        Frame shape, 1:3 to 3:1 (16:9, 2:3, 1:1): leads the prompt
                             with a sentence asking for it, and warns if the result is off
   -s, --size <WxH>          Sent to the backend, which has ignored it in tests; use --aspect
+      --view <name>         Camera: side, front, top-down, three-quarter, isometric
+      --style-ref, --character-ref, --composition-ref <image>
+                            A reference image with a role, labelled in the prompt
+                            (repeatable; after -i, max 5 images in all)
   -q, --quality <q>         low | medium | high | auto
   -b, --background <bg>     transparent | opaque | auto
   -n, --count <n>           Number of images, generated in parallel (default: 1)
@@ -66,7 +70,8 @@ Options:
   -h, --help                Show help
   -v, --version             Show version
 
-Output is always PNG. Not supported here: -f/--format, -c/--colors, --dither,
+Output is always PNG. Not supported here: --style, --character and your own views (presets),
+--manifest, -f/--format, -c/--colors, --dither,
 --output-quality, --lossless, --trim, --resize, --fit, --hard-alpha, --no-enlarge, --no-bleed,
 --via-responses, --model.
 Exit codes: 0 ok, 1 error, 2 auth, 3 quota, 4 moderation, 64 usage."""
@@ -100,12 +105,38 @@ def parse_aspect(value):
     return w, h
 
 
-def frame(aspect, prompt):
+def aspect_sentence(aspect):
     """The backend ignores the size field, but keeps to a ratio stated at the start of the prompt."""
     w, h = aspect
     shape = ("landscape format, wider than it is tall" if w > h else
              "portrait format, taller than it is wide" if w < h else "square format, as wide as it is tall")
-    return f"The frame must be in {w}:{h} {shape}.\n\n{prompt}"
+    return f"The frame must be in {w}:{h} {shape}."
+
+
+def builtin_views():
+    """The views the binary has built in; views.json is shared with it."""
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "views.json"), encoding="utf-8") as f:
+        return json.load(f)["views"]
+
+
+ROLE_LABELS = {
+    "style": "style reference only: take its palette, rendering and line work, not its subject or layout.",
+    "character": "character reference: keep the same character (face, proportions, outfit, colours) in a new pose and scene.",
+    "composition": "composition reference only: follow its layout and framing, not its subject or style.",
+}
+
+
+def compose(opts):
+    """The prompt as the binary composes it: frame, camera, a label per reference image, prompt."""
+    blocks = []
+    if opts["aspect"]:
+        blocks.append(aspect_sentence(opts["aspect"]))
+    if opts["view"]:
+        blocks.append(f"Camera: {builtin_views()[opts['view']]}")
+    labels = [f"Image {len(opts['images']) + i + 1}: {ROLE_LABELS[role]}" for i, (role, _) in enumerate(opts["refs"])]
+    if labels:
+        blocks.append("\n".join(labels))
+    return "\n\n".join(blocks + [opts["prompt"].rstrip()])
 
 
 def png_size(data):
@@ -131,13 +162,14 @@ def parse(args):
         return {"command": "status", "json": len(args) > 1}
     names = {
         "-o": "output", "--output": "output", "-i": "image", "--image": "image",
-        "-s": "size", "--size": "size", "-a": "aspect", "--aspect": "aspect", "-q": "quality", "--quality": "quality",
+        "-s": "size", "--size": "size", "-a": "aspect", "--aspect": "aspect", "--view": "view",
+        "--style-ref": "style-ref", "--character-ref": "character-ref", "--composition-ref": "composition-ref", "-q": "quality", "--quality": "quality",
         "-b": "background", "--background": "background", "-n": "count", "--count": "count",
     }
-    unsupported = {"-f", "--format", "--via-responses", "-m", "--model", "-c", "--colors", "--dither",
+    unsupported = {"--style", "--character", "--manifest", "-f", "--format", "--via-responses", "-m", "--model", "-c", "--colors", "--dither",
                    "--output-quality", "--lossless", "--trim", "--resize", "--fit", "--hard-alpha", "--no-enlarge", "--no-bleed"}
     flags = {"--json": "json", "--quiet": "quiet", "-h": "help", "--help": "help", "-v": "version", "--version": "version"}
-    values, seen, positionals = {"image": []}, set(), []
+    values, seen, positionals = {"image": [], "refs": []}, set(), []
     it = iter(args)
     for arg in it:
         if arg == "--":
@@ -164,6 +196,8 @@ def parse(args):
                 raise Fail(USAGE, f"{name} needs a value.")
         if key == "image":
             values["image"].append(inline)
+        elif key.endswith("-ref"):
+            values["refs"].append((key[:-4], inline))
         else:
             values[key] = inline
     if "help" in seen:
@@ -192,9 +226,15 @@ def parse(args):
         raise Fail(USAGE, "--count must be an integer from 1 to 10.")
     if len(values["image"]) > MAX_EDIT_IMAGES:
         raise Fail(USAGE, f"At most {MAX_EDIT_IMAGES} --image references are supported.")
+    if len(values["image"]) + len(values["refs"]) > MAX_EDIT_IMAGES:
+        raise Fail(USAGE, f"At most {MAX_EDIT_IMAGES} images in total, -i and --*-ref together.")
+    view = values.get("view")
+    if view is not None and view not in builtin_views():
+        raise Fail(USAGE, f"Unknown view \"{view}\"; the Python fallback has the built-in views "
+                          f"{', '.join(builtin_views())}. Your own presets need the codex-img binary.")
     return {
         "command": "run", "prompt": " ".join(positionals), "output": output, "images": values["image"],
-        "size": size, "aspect": aspect, "quality": values.get("quality"), "background": values.get("background"),
+        "size": size, "aspect": aspect, "view": view, "refs": values["refs"], "quality": values.get("quality"), "background": values.get("background"),
         "count": int(count), "json": "json" in seen, "quiet": "quiet" in seen,
     }
 
@@ -561,14 +601,14 @@ def main(args):
         opts = cmd
         if opts["prompt"] == "-":
             opts["prompt"] = sys.stdin.read().strip()
-        if opts["aspect"] and opts["prompt"].strip():
-            opts["prompt"] = frame(opts["aspect"], opts["prompt"])
+        if opts["prompt"].strip():
+            opts["prompt"] = compose(opts)
         if not opts["prompt"].strip() or len(opts["prompt"]) > MAX_PROMPT_CHARS:
             raise Fail(USAGE, "Image prompt must contain 1 to 32,000 characters.")
         check_output(opts["output"], opts["count"])
         log = (lambda m: None) if opts["quiet"] else (lambda m: print(m, file=sys.stderr, flush=True))
         creds = load_credentials()
-        input_urls = load_input_images(opts["images"])
+        input_urls = load_input_images(opts["images"] + [path for _, path in opts["refs"]])
         n = opts["count"]
         refs = f" with {len(input_urls)} reference(s)" if input_urls else ""
         log(f"Requesting {f'{n} images' if n > 1 else 'image'}{refs}...")
