@@ -1406,7 +1406,7 @@ mod tests {
         let (backend, captured) = serve(vec![(200, "application/json", direct_response())]);
         assert_eq!(execute(&opts, &spec, &backend, &|| Ok(creds())).unwrap(), 0); assert_eq!(captured.lock().unwrap().len(), 1);
         let note = manifest::read(&manifest::path_for(&raw)).unwrap();
-        let previous = PathBuf::from(note["parent"].as_str().unwrap()); assert!(previous.is_file()); assert!(previous.to_string_lossy().contains("history/actors/hero/"));
+        let previous = PathBuf::from(note["parent"].as_str().unwrap()); assert!(previous.is_file()); assert!(previous.to_string_lossy().replace('\\', "/").contains("history/actors/hero/"));
         assert_eq!(std::fs::read(&previous).unwrap(), old); assert_eq!(std::fs::read(manifest::path_for(&previous)).unwrap(), old_note);
         let source = dir.join("version.jpg");
         std::fs::write(&source, images::convert(&old, Format::Jpeg, &Encoding::default()).unwrap()).unwrap();

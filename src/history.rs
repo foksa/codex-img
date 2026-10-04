@@ -74,7 +74,9 @@ fn lock_with_notice(spec: &Path, no_wait: bool, notice: &mut dyn FnMut(String)) 
     let hash = util::fnv1a64(canonical.as_os_str().as_encoded_bytes());
     let file = fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(folder.join(format!("{hash:016x}.lock"))).map_err(|e| Error::other(e.to_string()))?;
     if let Err(error) = file.try_lock_exclusive() {
-        if error.kind() != std::io::ErrorKind::WouldBlock { return Err(Error::other(error.to_string())); }
+        // Windows reports a held lock as a lock violation, not WouldBlock.
+        let contended = error.kind() == std::io::ErrorKind::WouldBlock || error.raw_os_error() == fs2::lock_contended_error().raw_os_error();
+        if !contended { return Err(Error::other(error.to_string())); }
         if no_wait { return Err(Error::usage(format!("Another batch run holds the lock on {} (--no-wait).", canonical.display()))); }
         notice(format!("Waiting for another batch run on {}…", canonical.display()));
         file.lock_exclusive().map_err(|e| Error::other(e.to_string()))?;
@@ -121,8 +123,8 @@ mod tests {
         let held = fs::OpenOptions::new().read(true).write(true).open(&legacy).unwrap();
         held.lock_exclusive().unwrap();
         drop(lock(&spec, true).unwrap());
+        drop(held); // Windows locks are mandatory: the file can only be read once released.
         assert_eq!(fs::read(&legacy).unwrap(), b"legacy lock");
-        drop(held);
         let current = lock(&spec, true).unwrap();
         assert!(!legacy.exists());
         assert!(lock(&spec, true).is_err(), "modern spec lock stays held");

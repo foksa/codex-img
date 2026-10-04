@@ -239,6 +239,7 @@ pub(crate) fn execute_in(opts: &TileOptions, backend: &Backend, credentials: &dy
         });
         if project || opts.manifest {
             let inputs = [manifest::Input { path: PathBuf::from(&opts.input), role: "input", character: None, fingerprint: Some(format!("fnv1a64:{:016x}", util::fnv1a64(&bytes))) }];
+            let conversion = crate::conversion_record::build(opts.format, &Encoding::default(), &transform::Transform::default());
             let record = manifest::Record {
                 user_prompt: opts.prompt.as_deref().unwrap_or(PROMPT),
                 prompt: &prompt,
@@ -249,7 +250,7 @@ pub(crate) fn execute_in(opts: &TileOptions, backend: &Backend, credentials: &dy
                 background: Some("opaque"),
                 inputs: &inputs,
                 parent: parent.as_deref(),
-                conversion: Some(&crate::conversion_record::build(opts.format, &Encoding::default(), &transform::Transform::default())),
+                conversion: Some(&conversion),
             };
             let mut note = manifest::build(&record, &generated, &|p| run.manifest_path(p));
             note["source"] = json!("tile");

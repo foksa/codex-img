@@ -7,14 +7,14 @@ pub fn root(cwd: &Path) -> Option<PathBuf> {
     crate::presets::find_project(cwd).and_then(|file| file.parent().map(crate::batch::resolved))
 }
 
-/// Resolve first, so a symlink escaping the project stays absolute.
+/// Resolve first, so a symlink escaping the project stays absolute. Paths inside the project
+/// use `/` on every platform, so run files stay portable; outside paths stay native.
 pub fn shown(path: &Path, root: Option<&Path>) -> String {
     let absolute = crate::batch::resolved(&std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()));
-    let path = root.and_then(|root| absolute.strip_prefix(root).ok()).unwrap_or(&absolute);
-    if path.as_os_str().is_empty() {
-        ".".into()
-    } else {
-        path.display().to_string()
+    match root.and_then(|root| absolute.strip_prefix(root).ok()) {
+        Some(relative) if relative.as_os_str().is_empty() => ".".into(),
+        Some(relative) => relative.components().map(|part| part.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/"),
+        None => absolute.display().to_string(),
     }
 }
 
