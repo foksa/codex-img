@@ -30,6 +30,7 @@
   - `fill`: stretches.
 
   Trim runs first, then resize.
+- **`--nearest`** copies pixels with `--resize`, for whole-number upscaling of pixel art. Downscaling generated pixel art gives uneven pixels because the art is not on a true grid; grid detection is a later feature. It is a flag, with no filter selection.
 - **`--no-enlarge`** makes `--resize` a maximum size: smaller images keep their size instead of being scaled up.
 - **`--hard-alpha`** makes every pixel fully solid or fully transparent, and keeps it that way through `--resize` and `-c`. Use it for pixel art and crisp sprite edges.
 - **Sprites:** `codex-img convert raw/car.png --trim=4 --resize 400x -o sprites/`, or the same flags when generating.
@@ -61,3 +62,15 @@ Remove it with `--key auto` and a `--key-region` whose edges really are backgrou
 - **Transparent edges are handled for you; you don't need to clean transparent pixels yourself.**
   - Resizing uses premultiplied alpha, so the colour stored under transparent pixels can't bleed into the edges. Generated images often hide a dark vignette there.
   - PNG and lossless WebP output also gets the nearest visible colour written under transparent pixels. Engines that filter without premultiplying then don't show a dark halo either. `--no-bleed` turns that off.
+
+## Preview reports and removal masks
+
+`--json` reports the existing input/output sizes and trim box plus `hardAlphaPixels`,
+`keyedOutPixels`, and `paletteColors` when a palette was selected. Hard-alpha counts include
+newly transparent pixels before and after resizing; keyed-out counts only keying.
+`--mask-out <png>` with `--key` writes a black/white mask at the input size: white pixels were
+removed by keying, black were retained. It remains in input coordinates after trim/resize.
+Use one input and a separate new mask filename. No login, network or quota is involved.
+
+Saved conversions write run events linked to their input. Use `CODEX_IMG_EVENTS=off` for temporary previews.
+The terminal/agent interface remains `codex-img convert`; no flags changed.

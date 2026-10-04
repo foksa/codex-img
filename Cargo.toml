@@ -7,15 +7,27 @@ license = "Apache-2.0"
 repository = "https://github.com/foksa/codex-img"
 rust-version = "1.88"
 
+[workspace]
+members = ["crates/codex-img-core"]
+default-members = [".", "crates/codex-img-core"]
+resolver = "2"
+
 [dependencies]
+codex-img-core = { path = "crates/codex-img-core" }
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
-exoquant = "0.2"
-png = "0.18"
-webp = { version = "0.3", default-features = false }
-oxipng = { version = "10", default-features = false }
+fs2 = "0.4"
 serde_json = { version = "1", features = ["preserve_order"] }
 ureq = { version = "2", default-features = false, features = ["tls"] }
+
+# Debug builds are for tests and quick runs. Line numbers in our own code, no debug info in
+# dependencies and no incremental cache keep target/debug small (it grew past 4 GB).
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.dev.package."*"]
+debug = false
 
 [profile.release]
 opt-level = "z"

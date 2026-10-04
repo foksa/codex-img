@@ -44,6 +44,7 @@ You need to be logged in once with `codex login` (ChatGPT sign-in). `codex-img s
 
 - `prompting.md`: prompt recipes
 - `game-assets.md`: sprites, views, characters, palettes, `batch`, `sheet` and `tile`
+- `projects.md`: project folders, run history and manifests
 - `convert.md`: local conversion and background removal
 - `fallback.md`: the Python script's limits
 
@@ -78,12 +79,13 @@ codex-img status --json                                     # login check, uses 
 | `--style`, `--character` | Named style and character presets (repeatable): their text goes into the prompt, their images are sent as labelled references |
 | `--style-ref`, `--character-ref`, `--composition-ref` | Reference images with a role (repeatable). They're sent after the `-i` images, max 5 images in all, and each gets a line in the prompt saying how to use it |
 | `--palette`, `--palette-clean` | Limit the image to a palette: hex codes, a `.gpl`/`.hex` file, a swatch image, or a palette preset (14 built in, such as `pico-8`, `nes` or `resurrect-64`, or your own). See [Palettes](#palettes) |
-| `--manifest` | Also writes `<image>.json`: the prompt sent, presets, inputs (with fingerprints) and what the backend reported |
+| `--parent`, `--no-parent` | Set a version parent explicitly, or suppress the automatic link from a single `-i` reference. |
+| `--manifest` | Writes `<image>.json`: the prompt sent, presets, inputs (with fingerprints) and what the backend reported. Automatic inside a project |
 | `-q, --quality` | `low` \| `medium` \| `high` \| `auto` |
 | `-b, --background` | `transparent` \| `opaque` \| `auto` |
 | `--via-responses` | Fallback route: a routing model calls the `image_generation` tool through the Responses API. The prompt may be rewritten and `--size` is ignored |
 | `-m, --model` | Routing model for `--via-responses` (default `gpt-5.5`) |
-| `--trim`, `--resize`, `--fit`, `--hard-alpha`, `--no-enlarge`, `--no-bleed` | Trim, resize, hard alpha and edge bleed before saving, as in [`convert`](#converting-existing-images). With `--trim`, `--resize` or `--hard-alpha` the untouched original is also kept as `<name>.raw.<ext>`, since quota was spent on it and there's no seed to regenerate it |
+| `--trim`, `--resize`, `--fit`, `--hard-alpha`, `--no-enlarge`, `--nearest`, `--no-bleed` | Trim, resize, hard alpha and edge bleed before saving, as in [`convert`](#converting-existing-images). With `--trim`, `--resize` or `--hard-alpha` the untouched original is also kept as `<name>.raw.<ext>`, since quota was spent on it and there's no seed to regenerate it |
 | `-n, --count` | Images to generate in parallel (1–10). Each one is a separate request |
 | `--json` | Prints one JSON line per image: path, size, `submittedPrompt` (when presets, labels or `--aspect` changed the prompt), quality (the backend's), `outputQuality` (the JPEG/WebP quality codex-img applied, when it encoded lossily), revised prompt, usage, duration. After `--trim`, `--resize` or `--hard-alpha`: `size` is the saved file's, plus `rawSize` (the backend's), `rawPath` and `trim` |
 | `--quiet` | No progress output on stderr |
@@ -159,6 +161,151 @@ Give a character or style only the text that defines it. The text goes into ever
 
 **The Python fallback** has the built-in views and the `--*-ref` options, but not named styles, characters, palettes or your own views.
 
+### Rerunning an image
+
+```sh
+codex-img rerun art/fox.png -o art/fox-again.png --json
+codex-img rerun art/fox.png -n 3 -o art/variations/ --json
+```
+
+Rerun reads `<image>.json` and submits the recorded prompt, references and request settings,
+then applies the recorded conversion. Preset edits do not change this request. It costs one
+image per result (1 by default, up to 10); the backend has no seed, so the result varies.
+Existing files are preserved. The new manifest and events link to the original with `parent`.
+Ordinary edits with one `-i` also get a parent; use `--no-parent` to suppress it or
+`--parent <image>` to set a different one.
+
+A changed reference stops before quota. `--anyway` permits changed references and warns
+which ones it uses. Missing references always stop; edit the request to omit one. Older
+manifests replay available settings with a warning about default conversion, without needing
+`--anyway`. New manifests record conversion settings and fingerprints of the bytes sent.
+Tile reruns repeat the seam repair using the original panorama.
+
+`presets list --json` is free: one JSON line per preset with `kind`, `name`, `text`, absolute
+`refs`, and `source`. Palettes include hex `colors`; `hiddenBy` marks overridden entries.
+
+### Preserving batch versions
+
+```sh
+codex-img batch art/assets.json --inspect --json        # status, conversion and history; free
+codex-img batch art/assets.json --reroll hero --dry-run --json
+codex-img batch art/assets.json --reroll hero           # costs one image per planned generation
+codex-img batch art/assets.json --restore hero art/chosen.webp   # free; keeps the source
+codex-img refine --batch art/assets.json --key hero --from-comment
+```
+
+Re-roll accepts exact keys after the spec, either a list or repeated `--reroll`. Missing
+references are included in the dry-run cost. The current raw stays active until the new PNG
+and manifest are ready; then the old files move to `.codex-img/history/<key>/`. The new raw
+links to the history file as its parent. Generation failures preserve the current raw. If the
+raw or manifest changes during generation, activation stops and keeps the generated version
+in history for recovery.
+
+Restore copies any chosen image into the raw slot, preserving the source and archiving
+the current raw. A source manifest is copied except for its comment and star. It converts JPEG/WebP sources to PNG and sets the new
+raw’s parent to the selected source. Conversion then uses the current batch settings. Outside
+a project, history lives in `.codex-img/history/` beside the spec. `--inspect --json` lists each
+asset’s raw/output paths, missing/changed state, comment, star, conversion and history without
+login or quota. Pending generated files that were not activated are excluded from history.
+
+Restore accepts PNG, JPEG and WebP sources, including images without a manifest. Such sources get a minimal raw manifest with `parent` and the project `root` where applicable. Restore preserves existing manifest fields without inserting missing `inputs` or `setup`. Source comments and stars stay on the source and are not copied. If the current raw manifest has a non-empty comment, restore stops before changing images; clear or move that comment first (batch comments belong in the spec).
+
+Batch `--inspect --json` includes an `edited` boolean. For refined raws, `changed` compares the spec with the first generation manifest in the parent chain. Missing history gives `changed: false, edited: true`. Comments still do not count as changes.
+
+Batch generation, re-roll, restore and `refine --batch` lock each spec separately by its canonical path under `.codex-img/locks/`. Different specs can run concurrently. If the same spec is busy, stderr says “Waiting for another batch run on <spec>…” before waiting. Add `--no-wait` to fail immediately instead (also supported by `refine --batch`). `--convert-only` takes one spec lock for the conversion phase, so its workers run in parallel and `--no-wait` fails once before any conversion if the spec is busy. Dry runs and inspection do not lock. An unused legacy `.codex-img/batch.lock` is removed when a new spec lock is acquired; a legacy lock held by an older process is left in place.
+
+After reviewing a batch dry-run plan, use `--expect-images N` to stop before quota if the
+number of generations (including missing dependencies) changed. The CLI enforces this count
+when the run starts, so a cost reviewed from the dry run still applies.
+
+### Conversion previews
+
+`convert --json` also reports `hardAlphaPixels` (pixels made transparent by hard alpha,
+before and after resizing), `keyedOutPixels`, and `paletteColors` (the selected palette size).
+Its existing `trim` rectangle is in input coordinates. `--mask-out mask.png` with `--key`
+writes an input-sized grayscale PNG: white marks pixels removed by keying, black marks the
+rest. The mask stays in input coordinates even when the output is trimmed or resized. It
+needs one input; its path must differ from the input and output. All of this is local and free.
+
+### Checking project files
+
+```sh
+codex-img check codex-img.json --json
+codex-img check art/assets.json --json
+```
+
+Check validates presets and batch specs with the same parsers used to run them. It needs no
+login and uses no quota. JSON output is a list of `{path, message}` errors, or `[]` when
+valid. Exit code 0 means valid; 64 means invalid. Independent assets and preset entries are
+checked even when another entry is broken. `--kind=batch|presets` selects the type explicitly, including for an editor’s temporary copy. Otherwise the filename and fields identify the type.
+
+The editor schemas are in `schemas/batch.schema.json` and `schemas/codex-img.schema.json`.
+Point a file’s `$schema` at the matching schema to enable autocomplete in your editor.
+The CLI accepts this field and never downloads or executes its value. The CLI also checks
+relations that a schema cannot express, such as missing presets and reference cycles.
+
+### Comments and stars
+
+A comment is one plain `comment` string: on a batch asset in its spec, or in an image's
+`<image>.json` manifest. Stars are `"star": true` in manifests. These fields never change
+the generation request or the batch's changed check.
+
+```sh
+codex-img comments --json                  # comments in this project; no quota
+codex-img stars --json                     # starred images; no quota
+codex-img comments art/fox.png --set "Make the hat blue"
+codex-img comments --batch art/assets.json --key hero --set "Blue hat"
+codex-img stars art/fox.png --set true
+```
+
+Give a folder to scan elsewhere. Listings print one JSON object per line with paths relative
+to the scanned folder: image comments have `image` and `comment`; batch comments have `spec`,
+`key`, `rawPath` and `comment`; stars have `image` and `star`. The scan skips `.git/`,
+`.codex-img/`, `node_modules/`, `target/` and symlink directories. Empty comments are omitted.
+Broken image manifests and recognizable batch specs are skipped with warnings on stderr;
+unrelated JSON/JSONC files are ignored quietly. Specs are recognized by a top-level `assets`
+key, including when its value is incomplete; `stars` scans only image manifests. JSON stdout
+stays NDJSON and a completed listing exits 0.
+
+Use `--set ""` to clear a comment, or `--set false` to remove a star. Changes preserve the
+other JSON fields and use a lock and an atomic replacement. `--expect "old text"` (or
+`--expect true|false` for a star) stops if someone changed that field since you read it.
+These review commands need no login and spend no quota. Outside projects, review locks live
+beside the global event log; reviewing an image does not create a local `.codex-img/` folder.
+
+### Refining a saved image
+
+```sh
+codex-img refine art/fox.png "Make the hat blue" -o art/ --json
+codex-img refine art/fox.png --from-comment -o art/ --json
+```
+
+Refine costs one image. It sends “Change only: <change>. Keep everything else exactly as it
+is.” with the saved image as its content reference. It keeps the recorded request and local
+conversion settings, creates new files, and sets `parent` to the original. Named presets
+use their current project/global definitions. It compares the original submitted prompt and
+input fingerprints with today's composition and warns with preset names when text,
+reference selection or reference contents changed. Combined text can be ambiguous without
+snapshots; the warning says when a change cannot be attributed to one definition. A missing
+recorded preset or current reference stops before generation. Preset definitions are not
+snapshotted in manifests. When a single preset’s old text can be recovered from the submitted
+prompt, the drift warning includes short old and new excerpts.
+
+New manifests made from a parent record `kind`: `"rerun"` for `rerun` and batch re-rolls,
+`"edit"` for `refine` and batch edits. The same field is on the `job.started` event.
+
+Comment and star changes edit only that field's text in the manifest or spec, so a
+hand-written batch spec keeps its layout.
+
+`--from-comment` takes the edit from the image's comment. The new manifest records it as
+`fromComment`; the original comment is cleared only after the image and new manifest are
+saved. Errors preserve it. A comment changed during the run is also preserved, with a
+warning. `--expect-comment "old text"` stops if it changed before starting. Batch refinement
+uses `refine --batch <spec> --key <key> "<change>"`, or `--from-comment`. It keeps
+the raw’s recorded generation settings and preset names (current definitions, with drift
+warnings), then applies the batch’s current conversion settings. Use re-roll to adopt changed
+spec generation settings.
+
 ### Palettes
 
 ```sh
@@ -228,6 +375,7 @@ Without `-o`, output goes next to the input as `<name>.<ext>`, or `<name>.min.<e
 | `--resize SIZE` | `WxH`, `Wx` or `xH`, up to 8192 per side. A missing side keeps the aspect ratio. Runs after `--trim` |
 | `--fit MODE` | For `WxH` with another aspect ratio: `inside` (default; fits in the box, so one side may be smaller), `cover` (exactly WxH, crops the centre), `contain` (exactly WxH, pads with transparency, or white in JPEG), `fill` (stretches) |
 | `--hard-alpha[=N]` | Make every pixel fully solid (alpha above `N`, default 16) or fully transparent. Runs before `--trim`, and again at 50% after `--resize` so resampled edges stay hard. For pixel art and other crisp sprites. It also fixes the backend's "solid" pixels, which come back at alpha 250–254 |
+| `--nearest` | Copy source pixels instead of smoothing, with `--resize`. For whole-number upscaling of pixel art |
 | `--no-enlarge` | Only shrink: the scale never goes above 1, so `--resize` leaves smaller images at their size. `cover` still crops to the box's aspect ratio, `contain` pads the unscaled image, `fill` caps each side on its own |
 | `--key COLOUR` | Make an unwanted background transparent, such as the sea painted under a boat or the sky behind a building: pixels of this colour that connect to the transparent background or the image's border. It's a flood fill, so matching paint enclosed by the object's outline (a blue stripe on a hull) survives, and small islands the removed background leaves behind, like foam and spray, go with it. `COLOUR` is `auto[:TOL]`, a name (`red`, `orange` for browns too, `yellow`, `green`, `cyan`, `blue`, `purple`, `pink`, `white`, `gray`, `black`), or `#rrggbb[:TOL]`. `auto` uses the background's own colours, sampled from the outer 5% along the `--key-region` edges, or all four edges without a region. `TOL` is per channel, default 32. Repeatable. Runs after `--hard-alpha` and before `--trim` |
 | `--key-region BANDS` | Only key out within bands along edges of the visible content, each a share of its height or width: `bottom:30%` (ground under a sprite), `top:80%` (sky behind a building), `top:40%,left:15%`, or `all:20%`. Matching colours elsewhere, like a sky-blue window, stay safe |
@@ -236,6 +384,10 @@ Without `-o`, output goes next to the input as `<name>.<ext>`, or `<name>.min.<e
 | `--trim-density [EDGES:]F` | With `--trim`, also drop sparse rows at the bottom: those with fewer visible pixels than `F` (e.g. `0.15`) of the fullest row. Leftover specks under a sprite then don't become its bottom edge, which would make a sprite that stands on its bottom edge float. Other edges: `top:0.15`, `bottom,left:0.15`, `all:0.15`. A thin mast, pole or trunk is sparse too, so check the result |
 | `--no-bleed` | Keep the colour stored under fully transparent pixels (see below) |
 | `--force` | Replace existing output files (never an input). The file is written to a temporary name and renamed into place, and one that already holds the same bytes is left untouched (`--json` reports `unchanged: true`) |
+
+Use `--nearest` for whole-number upscaling of pixel art, such as a 32×32 sprite to 96×96. Downscaling generated pixel art with it gives uneven pixels, because the art is not on a true grid. Grid detection is a later feature. Batch assets and defaults accept `nearest: true`; it is a flag, with no filter selection.
+
+Saved conversions appear in the run feed, linked to the source. Temporary previews can use `CODEX_IMG_EVENTS=off`.
 
 Generated images with a transparent background often store a dark vignette under the transparent pixels. It's invisible until something resizes or filters the image without premultiplying alpha, and then it shows up as a dark halo around the edges. `convert` and generation deal with it twice. Its own resize uses premultiplied alpha, so the hidden colour never reaches the result. For PNG and lossless WebP output, it also writes the nearest visible colour under every fully transparent pixel (edge bleed, as texture tools do), so a game engine's texture filtering blends toward the edge colour. Visible pixels and alpha don't change. As a side effect, the file usually gets much smaller, because the noisy hidden colours are gone. Lossy WebP replaces those colours on its own, JPEG has no alpha, and palette PNGs (`-c`) are left alone so the bled colours don't use up palette entries. `--no-bleed` keeps the stored colours as they are; use it with `--lossless` when every pixel must be kept exactly, including invisible ones. The `--json` output also has `inputSize`. Animated WebP and PNG (APNG) are refused rather than converted, because only the first frame would survive. A file that already matches the request (a lossy WebP converted to WebP with default settings, for example) is copied rather than re-encoded, so it doesn't lose quality again. Without `--force`, existing files are never overwritten, and the input never is. The same input and options always give the same bytes, `-c` included, so re-running a pipeline with `--force` only rewrites files whose output really changed. Each input is converted independently: if one fails, the others still run and the exit code reports the failure.
 
@@ -254,7 +406,7 @@ A bare `convert` as the first argument always runs this subcommand. A prompt tha
 
 ### Contact sheets
 
-`codex-img sheet` lays images out in one labelled grid, so a batch can be reviewed as a single image. That's cheaper for an agent than opening each file, and it's how problems across a set show up. Sprites stand on a line at the bottom of their cell, so one with empty rows or leftover specks under it visibly floats. Like `convert`, it needs no login and no quota.
+`codex-img sheet` lays images out in one labelled grid, so a batch can be reviewed as a single image. That's cheaper for an agent than opening each file, and it's how problems across a set show up. Sprites stand on a line at the bottom of their cell, so one with empty rows or leftover specks under it visibly floats. Like `convert`, it needs no login and no quota. Saved sheets appear in the run feed; previews can use `CODEX_IMG_EVENTS=off` to stay out of history.
 
 ```sh
 codex-img sheet public/assets/harbor/*.png -o harbor-sheet.png
@@ -294,7 +446,7 @@ The result keeps the original's size and framing, every pixel outside the band i
 
 ### Asset batches
 
-`codex-img batch` builds a whole set of assets, a game's art for example, from one JSON spec. It generates each asset's raw image if it's missing (4 at a time), then converts every raw image into its published form. Raw images are never regenerated, so delete one to re-roll it. Converted files are rewritten only when their bytes change, so an unchanged asset stays unchanged in git.
+`codex-img batch` builds a whole set of assets, a game's art for example, from one JSON spec. It generates each asset's raw image if it's missing (4 at a time), then converts every raw image into its published form. Existing raw images are kept unless you request `--reroll`; their earlier versions go to history. Converted files are rewritten only when their bytes change, so an unchanged asset stays unchanged in git.
 
 ```json
 {
@@ -327,12 +479,57 @@ codex-img batch art/assets.json --convert-only     # no login, no quota
 - **`defaults`** apply to every asset. An asset overrides them, and `null` or `false` turns one off, like the sky above.
 - **Palettes:** `palette` (hex codes as a string or a list, a file relative to the spec, or a palette preset) and `palette_clean`. The hex codes join the prompt when the raw image is generated, and the conversion snaps to them.
 - **Presets:** `view`, `style` and `character` name presets, as the options of the same names do; `style` and `character` can be lists. `style_ref`, `character_ref` and `composition_ref` are reference images with a role, relative to the spec. The spec can define its own presets under top-level `views`, `styles` and `characters`, which win over the project's and global ones. The top-level `style` is still plain text appended to every prompt; an asset's `style` names a preset.
-- **Manifests:** each generated raw image gets `<key>.png.json` beside it, with the prompt sent, the presets, the inputs with fingerprints, and what the backend reported. When the spec or an input has changed since, the asset's `skip` line says so (`changed: true` with `--json`). The asset is never regenerated on its own, because that would spend quota; delete the raw image to re-roll it.
+- **Manifests:** each generated raw image gets `<key>.png.json` beside it, with the prompt sent, the presets, the inputs with fingerprints, and what the backend reported. When the spec or an input has changed since, the asset's `skip` line says so (`changed: true` with `--json`). The asset is never regenerated on its own, because that would spend quota; use `--reroll <key>` to keep its history.
 - **Generation fields:** `prompt`, `aspect`, `size`, `quality`, `background`, `reference` (other keys whose raw images are passed as `-i`; they're generated first) and `images` (other `-i` files). `aspect` leads the prompt, ahead of the `style`, and a frame more than 2% off it is reported as a warning on the asset's line. `publish: false` generates an asset without converting it, for references.
-- **Conversion fields** are the `convert` options with underscores: `format`, `colors`, `dither`, `output_quality`, `lossless`, `trim`, `hard_alpha`, `resize`, `fit`, `no_enlarge`, `no_bleed`, `key`, `key_region`, `key_spread`, `key_cut` and `trim_density`. `max: [W, H]` is short for `resize` with `no_enlarge`.
+- **Conversion fields** are the `convert` options with underscores: `format`, `colors`, `dither`, `output_quality`, `lossless`, `trim`, `hard_alpha`, `resize`, `fit`, `no_enlarge`, `nearest`, `no_bleed`, `key`, `key_region`, `key_spread`, `key_cut` and `trim_density`. `max: [W, H]` is short for `resize` with `no_enlarge`.
 - **Validation:** the whole spec is checked before anything runs. An unknown field, a missing reference or a reference loop is an error that names the asset.
 - **Output:** one line per asset and step (`ok`, `skip`, `same`, `FAILED`), or one JSON object each with `--json`. After a login or quota error, no more images are started. The exit code is the worst failure's, so a run with any failure exits non-zero.
 - **Options:** `-j N` sets how many images are generated at the same time (default 4, max 10), and `--generate-only` skips the conversion step.
+
+### Event log
+
+Every generation, from a plain run, `batch` or `tile`, writes events as it goes, so other tools can show images while they're being made.
+
+A project is the folder holding the nearest `codex-img.json`, searched upward from the working folder, as presets are. An empty `{}` file is enough to mark a project. Saving an image into another folder doesn't change which project the run belongs to.
+
+`codex-img init [folder]` starts one: it writes `{}` to `codex-img.json` in the folder (default: the current one), and `--no-events` writes `{"events": false}` instead. It refuses inside an existing project and never overwrites. `--json` prints `{file, root, events}`.
+
+Inside a project, each run has its own file:
+
+```
+.codex-img/
+  README.md
+  runs/2026-10-02T14-10-08_<run id>.ndjson
+```
+
+Paths inside the project are relative to its root, including `cwd`, `spec`, inputs and outputs. Paths outside it stay absolute. Project event files omit the absolute `root`, so they can travel with the folder. They never rotate. The first run writes `.codex-img/README.md` explaining that committing this folder is your choice; to keep it local, add `.codex-img/` to `.gitignore` yourself. The CLI never edits `.gitignore` or replaces your README.
+
+Every generated image in a project gets a manifest beside it (`<image>.json`), including kept raw originals and tile edits. Reference paths inside the project are relative to the project root. Outside a project, plain runs still need `--manifest`, batch raw images still get manifests, and tile keeps its previous behavior. Manifests are never replaced; `tile --force` may replace images, but preserves existing manifests and warns about them.
+
+Outside a project, events still go to `$XDG_STATE_HOME/codex-img/events.ndjson`, else `~/.local/state/codex-img/events.ndjson` (`%LOCALAPPDATA%\codex-img\` on Windows). Watch that log with `tail -f ~/.local/state/codex-img/events.ndjson`. Its paths are absolute, and past 8 MB it moves to `events.ndjson.1` and a new log starts.
+
+`CODEX_IMG_EVENTS=<path>` forces one log with absolute paths, including for project runs. Its `run.started` includes the absolute project `root`. `CODEX_IMG_EVENTS=off` (also `0`, `false` or `no`) turns off event files and registry updates everywhere; it doesn't turn off manifests.
+
+To turn logging off for good, add `"events": false` at the top level of a project's `codex-img.json`: its runs write no run file, no `.codex-img/README.md` and no registry entry. In the global `presets.json` (`$XDG_CONFIG_HOME/codex-img/`, else `~/.config/codex-img/`), the same key covers runs outside a project and projects that don't set it. `CODEX_IMG_EVENTS` wins over both, then the project file, then the global file; the default is on. Manifests are written either way, since rerun, refine and versions depend on them.
+
+A `projects.json` beside the default global log lists recent projects as `[{"root":"/absolute/project", "lastRun":1790949608000}]`. `lastRun` is the run's start time in Unix milliseconds. A project run updates it even when events are sent to an override log. A file lock protects concurrent updates, and a temporary file and rename let readers see a complete list.
+
+New events use format `v:2`. Version 1 lines keep their original absolute paths. These are example project events:
+
+```json
+{"v":2,"t":1790938383960,"event":"run.started","run":"cbb4…","pid":12089,"source":"run","cwd":".","jobs":1,"generation":true}
+{"v":2,"t":1790938383970,"event":"job.started","run":"cbb4…","job":"0677…","pid":12089,"prompt":"a small red mushroom","inputs":[{"path":"art/anchor.png","role":"character"}],"request":{"aspect":"1:1","background":"transparent"},"output":"art/mushroom.png"}
+{"v":2,"t":1790938383970,"event":"job.stage","run":"cbb4…","job":"0677…","pid":12089,"stage":"editing"}
+{"v":2,"t":1790938427182,"event":"job.done","run":"cbb4…","job":"0677…","pid":12089,"path":"art/mushroom.png","rawPath":"art/mushroom.raw.png","manifestPath":"art/mushroom.png.json","size":"734x694","durationMs":40772}
+{"v":2,"t":1790938427190,"event":"run.ended","run":"cbb4…","pid":12089,"code":0,"done":1,"failed":0,"durationMs":43230}
+```
+
+- **Usage:** new `run.started` events include `generation: true` for backend work and `false` for local work, including batch restores. Count completed jobs, rather than raw files or planned jobs. `job.done.historyPath` records the previous batch raw’s archive when re-roll or restore replaces it. Re-rolls omit `parent` from `job.started`; `job.done` adds it only after activation succeeds.
+- **Runs and jobs:** a run is one command (`source`: `run`, `batch`, `tile`, `convert` or `sheet`), and its jobs are the images it generates. `run.started` says how many `jobs` are planned (and the `spec` for `batch`). Each job writes `job.started`, `job.stage` as the backend reports progress, then `job.done` or `job.failed` (with `code`, the exit code it maps to, and `message`). `run.ended` gives the run's `code`, how many jobs were `done` and `failed`, and a `message` when the run itself stopped, a login error before any job for example. Every event carries its `run` id, and job events their `job` id.
+- **Job fields:** `prompt` as given, `submittedPrompt` when presets or labels changed it, `inputs` with their roles, the `request` settings, and the asked-for `output`. `batch` adds the asset's `key`, and `-n` adds the job's `index`.
+- **Interrupted runs:** a killed process writes no end, so a reader should check whether the run's `pid` is still alive.
+- **Never in the way:** event or registry write errors are ignored, and generation goes on. Each event is one line written at once, so parallel jobs don't mix their lines.
+- **Prompts are stored:** event files keep every prompt in plain text, as manifests do.
 
 ## The backend
 

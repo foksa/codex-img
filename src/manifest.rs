@@ -22,11 +22,13 @@ pub fn fingerprint(path: &Path) -> Option<String> {
 }
 
 /// An image the request sent, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Input {
     pub path: PathBuf,
     /// `input` for -i and batch references, else the reference role.
     pub role: &'static str,
     pub character: Option<String>,
+    pub fingerprint: Option<String>,
 }
 
 /// What a generation asked for.
@@ -39,6 +41,8 @@ pub struct Record<'a> {
     pub quality: Option<&'a str>,
     pub background: Option<&'a str>,
     pub inputs: &'a [Input],
+    pub parent: Option<&'a Path>,
+    pub conversion: Option<&'a Value>,
 }
 
 pub fn build(record: &Record, image: &Generated, shown: &dyn Fn(&Path) -> String) -> Value {
@@ -58,7 +62,7 @@ pub fn build(record: &Record, image: &Generated, shown: &dyn Fn(&Path) -> String
             if let Some(name) = &input.character {
                 entry["character"] = json!(name);
             }
-            if let Some(fingerprint) = fingerprint(&input.path) {
+            if let Some(fingerprint) = input.fingerprint.clone().or_else(|| fingerprint(&input.path)) {
                 entry["fingerprint"] = json!(fingerprint);
             }
             entry
@@ -67,6 +71,10 @@ pub fn build(record: &Record, image: &Generated, shown: &dyn Fn(&Path) -> String
     if !inputs.is_empty() {
         out.insert("inputs".into(), json!(inputs));
     }
+    if let Some(parent) = record.parent { out.insert("parent".into(), json!(shown(parent))); }
+    if let Some(conversion) = record.conversion { out.insert("conversion".into(), conversion.clone()); }
+    out.insert("transport".into(), json!(match image.transport { crate::backend::Transport::Direct => "direct", crate::backend::Transport::Responses => "responses" }));
+    if let Some(model) = &image.routing_model { out.insert("routingModel".into(), json!(model)); }
     let r = &image.reported;
     let mut reported = Map::new();
     for (key, value) in [("imageModel", &r.model), ("size", &r.size), ("quality", &r.quality), ("background", &r.background)] {
@@ -96,8 +104,9 @@ pub fn request(aspect: Option<Aspect>, size: Option<&str>, quality: Option<&str>
 }
 
 pub fn write(path: &Path, manifest: &Value) -> Result<()> {
+    // A manifest may already hold the user's review notes; it belongs to its original image.
     let text = serde_json::to_string_pretty(manifest).map_err(|e| Error::other(e.to_string()))? + "\n";
-    cli::write_output(path, text.as_bytes(), true).map(|_| ())
+    cli::write_output(path, text.as_bytes(), false).map(|_| ())
 }
 
 pub fn read(path: &Path) -> Option<Value> {
@@ -113,6 +122,28 @@ pub fn changed(manifest: &Value, prompt: &str, request: &Value, inputs: &[PathBu
     let recorded: Vec<Option<&str>> = manifest.get("inputs").and_then(Value::as_array).map_or_else(Vec::new, |list| list.iter().map(|i| i.get("fingerprint").and_then(Value::as_str)).collect());
     let current: Vec<Option<String>> = inputs.iter().map(|p| fingerprint(p)).collect();
     recorded.len() != current.len() || recorded.iter().zip(&current).any(|(a, b)| a.is_none() || *a != b.as_deref())
+}
+
+/// Fingerprint the bytes actually sent, even if an agent edits the file during generation.
+pub fn capture(input: &mut Input, image: &crate::images::InputImage) -> bool {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(&image.data_b64).expect("loaded image base64");
+    let fingerprint = format!("fnv1a64:{:016x}", util::fnv1a64(&bytes));
+    let changed = input.fingerprint.as_ref().is_some_and(|previous| previous != &fingerprint);
+    input.fingerprint = Some(fingerprint);
+    changed
+}
+
+pub fn composer_inputs(opts: &cli::Options, cwd: &Path) -> Vec<Input> {
+    let mut inputs: Vec<_> = opts.images.iter().map(|path| Input { path: cwd.join(path), role: "input", character: None, fingerprint: None }).collect();
+    for (paths, role) in [(&opts.setup.style_refs, "style"), (&opts.setup.character_refs, "character"), (&opts.setup.composition_refs, "composition")] {
+        inputs.extend(paths.iter().map(|path| Input { path: cwd.join(path), role, character: None, fingerprint: None }));
+    }
+    inputs
+}
+pub fn setup(opts: &cli::Options, explicit: &[Input], shown: &dyn Fn(&Path) -> String) -> Value {
+    json!({"view":opts.setup.view,"styles":opts.setup.styles,"characters":opts.setup.characters,"palette":opts.palette,
+        "inputs":explicit.iter().map(|input| json!({"path":shown(&input.path),"role":input.role})).collect::<Vec<_>>()})
 }
 
 #[cfg(test)]
@@ -138,9 +169,9 @@ mod tests {
             usage: Some(json!({"total_tokens": 9})),
             duration: std::time::Duration::ZERO,
         };
-        let inputs = [Input { path: reference.clone(), role: "character", character: Some("captain".into()) }];
+        let inputs = [Input { path: reference.clone(), role: "character", character: Some("captain".into()), fingerprint: None }];
         let used = [(Kind::View, "side".to_string(), Source::BuiltIn)];
-        let record = Record { user_prompt: "A fox.", prompt: "Camera: side.\n\nA fox.", used: &used, aspect: Some(Aspect { width: 2, height: 3 }), size: None, quality: None, background: Some("transparent"), inputs: &inputs };
+        let record = Record { user_prompt: "A fox.", prompt: "Camera: side.\n\nA fox.", used: &used, aspect: Some(Aspect { width: 2, height: 3 }), size: None, quality: None, background: Some("transparent"), inputs: &inputs, parent: None, conversion: None };
         let manifest = build(&record, &image, &|p: &Path| p.file_name().unwrap().to_string_lossy().into_owned());
         assert_eq!(manifest["presets"], json!([{"kind": "view", "name": "side", "source": "built-in"}]));
         assert_eq!(manifest["request"], json!({"aspect": "2:3", "background": "transparent"}));
@@ -152,6 +183,8 @@ mod tests {
         assert_eq!(path, dir.join("fox.png.json"));
         write(&path, &manifest).unwrap();
         let back = read(&path).unwrap();
+        assert!(write(&path, &json!({"comment": "replacement"})).is_err());
+        assert_eq!(read(&path).unwrap(), back, "existing manifests are never replaced");
         let same = request(Some(Aspect { width: 2, height: 3 }), None, None, Some("transparent"));
         assert!(!changed(&back, "Camera: side.\n\nA fox.", &same, std::slice::from_ref(&reference)));
         assert!(changed(&back, "A fox.", &same, std::slice::from_ref(&reference)), "the prompt changed");

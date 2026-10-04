@@ -1,0 +1,1322 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "title": "codex-img batch spec",
+  "required": [
+    "assets"
+  ],
+  "$defs": {
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prompt"
+      ],
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "size": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "aspect": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "view": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "quality": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "auto",
+            null,
+            false
+          ]
+        },
+        "background": {
+          "enum": [
+            "transparent",
+            "opaque",
+            "auto",
+            null,
+            false
+          ]
+        },
+        "format": {
+          "enum": [
+            "png",
+            "jpeg",
+            "webp",
+            null,
+            false
+          ]
+        },
+        "resize": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "fit": {
+          "enum": [
+            "inside",
+            "cover",
+            "contain",
+            "fill",
+            null,
+            false
+          ]
+        },
+        "key_region": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "style": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "character": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "style_ref": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "character_ref": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "composition_ref": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "palette": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "reference": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "images": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "key": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "palette_clean": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "publish": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "dither": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "lossless": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "no_enlarge": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "no_bleed": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "colors": {
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "output_quality": {
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "key_spread": {
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "trim_density": {
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "trim": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "hard_alpha": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "key_cut": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "max": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 8192
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                }
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "comment": {
+          "type": "string"
+        },
+        "nearest": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Copy pixels for whole-number upscaling of pixel art; requires resize or max."
+        }
+      }
+    }
+  },
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "raw_dir": {
+      "type": "string"
+    },
+    "out_dir": {
+      "type": "string"
+    },
+    "style": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "size": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "aspect": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "view": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "quality": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "auto",
+            null,
+            false
+          ]
+        },
+        "background": {
+          "enum": [
+            "transparent",
+            "opaque",
+            "auto",
+            null,
+            false
+          ]
+        },
+        "format": {
+          "enum": [
+            "png",
+            "jpeg",
+            "webp",
+            null,
+            false
+          ]
+        },
+        "resize": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "fit": {
+          "enum": [
+            "inside",
+            "cover",
+            "contain",
+            "fill",
+            null,
+            false
+          ]
+        },
+        "key_region": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "style": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "character": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "style_ref": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "character_ref": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "composition_ref": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "palette": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "images": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "key": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "palette_clean": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "publish": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "dither": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "lossless": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "no_enlarge": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "no_bleed": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "colors": {
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "output_quality": {
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "key_spread": {
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "trim_density": {
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "trim": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "hard_alpha": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "key_cut": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "string",
+                "number"
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "max": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 8192
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                }
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "nearest": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Copy pixels for whole-number upscaling of pixel art; requires resize or max."
+        }
+      }
+    },
+    "assets": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))[^/]+(?:/[^/]+)*$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/asset"
+      }
+    },
+    "views": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9_-]{1,64}$"
+      },
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "refs": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "array",
+                    "maxItems": 0
+                  }
+                ]
+              }
+            },
+            "anyOf": [
+              {
+                "required": [
+                  "text"
+                ]
+              },
+              {
+                "required": [
+                  "refs"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "styles": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9_-]{1,64}$"
+      },
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "refs": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 5
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "anyOf": [
+              {
+                "required": [
+                  "text"
+                ]
+              },
+              {
+                "required": [
+                  "refs"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "characters": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9_-]{1,64}$"
+      },
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "refs": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 5
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "anyOf": [
+              {
+                "required": [
+                  "text"
+                ]
+              },
+              {
+                "required": [
+                  "refs"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "palettes": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9_-]{1,64}$"
+      },
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 2,
+            "maxItems": 255
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "refs": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "array",
+                    "maxItems": 0
+                  }
+                ]
+              }
+            },
+            "anyOf": [
+              {
+                "required": [
+                  "text"
+                ]
+              },
+              {
+                "required": [
+                  "refs"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

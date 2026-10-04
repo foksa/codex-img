@@ -51,3 +51,9 @@ impl fmt::Display for Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+impl From<codex_img_core::error::Error> for Error {
+    fn from(error: codex_img_core::error::Error) -> Self {
+        Self { kind: match error.kind { codex_img_core::error::Kind::Other => Kind::Other, codex_img_core::error::Kind::Usage => Kind::Usage }, message: error.message }
+    }
+}

@@ -5,7 +5,6 @@ use crate::presets::Setup;
 use crate::transform;
 use crate::util;
 use serde_json::{json, Map, Value};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -18,6 +17,13 @@ pub fn help() -> String {
 Usage:
   codex-img [options] "<prompt>"
   echo "<prompt>" | codex-img [options] -
+  codex-img init [folder] [--no-events]  Start a project: write codex-img.json
+  codex-img check <file> [--json]      Validate specs or presets (no quota)
+  codex-img refine <image> <change>    Edit only the requested change (1 image of quota)
+  codex-img comments [--json] [folder]   List or change review comments (no quota)
+  codex-img stars [--json] [folder]      List or change image stars (no quota)
+  codex-img rerun <image> [-n N] [-o out] [--anyway]
+                              Generate again from its manifest (uses quota)
   codex-img status [--json]   Check the Codex login offline (uses no quota)
   codex-img convert <input>... [-o path] [-f fmt] [-c n] [--trim] [--resize WxH]
                               Convert, trim or resize existing images locally (no quota);
@@ -65,6 +71,7 @@ Options:
                             cover | contain | fill for WxH. With --trim, --resize or
                             --hard-alpha the original is also kept, as <name>.raw.png.
                             --no-enlarge makes --resize only shrink
+                            --nearest copies pixels for whole-number pixel-art upscaling
       --no-bleed            Keep the colour under fully transparent pixels (by
                             default PNG and lossless webp get the nearest edge colour)
   -a, --aspect <W:H>        Frame shape, 1:3 to 3:1 (16:9, 2:3, 1:1): leads the prompt
@@ -92,8 +99,10 @@ Options:
                             one afterwards (alpha hardened, written as a palette PNG)
       --palette-clean       Stronger cleanup for art not made with the palette:
                             fewer stray pixels, colours matched by hue first
-      --manifest            Also write <image>.json: the prompt sent, presets, inputs
-                            and what the backend reported
+      --manifest            Write <image>.json: the prompt sent, presets, inputs
+                            and what the backend reported (automatic in projects)
+      --parent <image>      Link the new image to this earlier image
+      --no-parent           Do not infer a parent from a single -i image
   -q, --quality <q>         low | medium | high | auto
   -b, --background <bg>     transparent | opaque | auto
       --via-responses       Fallback route: a routing model calls the image tool
@@ -106,6 +115,7 @@ Options:
   -v, --version             Show version
 
 Uses the ChatGPT login stored by `codex login` ($CODEX_HOME/auth.json).
+Appends progress events to ~/.local/state/codex-img/events.ndjson ($CODEX_IMG_EVENTS, `off` to stop).
 Exit codes: 0 ok, 1 error, 2 auth, 3 quota, 4 moderation, 64 usage.
 
 Examples:
@@ -124,6 +134,12 @@ pub struct Options {
     /// Aspect, presets and reference roles, which `presets::compose` turns into the sent prompt.
     pub setup: Setup,
     pub manifest: bool,
+    pub parent: Option<String>,
+    pub no_parent: bool,
+    pub replay: Option<Box<crate::rerun::Saved>>,
+    pub transfer: Option<crate::refine::Transfer>,
+    /// What made this image from its parent: "rerun" or "edit". Recorded in the manifest and job events.
+    pub kind: Option<&'static str>,
     /// --palette as given; `main` resolves it (a name may need the preset files).
     pub palette: Option<String>,
     pub palette_clean: bool,
@@ -155,6 +171,16 @@ pub enum Command {
     TileHelp,
     Presets(crate::presets::PresetsOptions),
     PresetsHelp,
+    Check(crate::check::Options),
+    CheckHelp,
+    Init(crate::project::InitOptions),
+    InitHelp,
+    Rerun(crate::rerun::Options),
+    RerunHelp,
+    Refine(crate::refine::Options),
+    RefineHelp,
+    Review(crate::review::Options),
+    ReviewHelp(bool),
     Run(Box<Options>),
 }
 
@@ -228,8 +254,24 @@ pub fn parse(args: &[String]) -> Result<Command> {
     if args.first().is_some_and(|a| a == "tile") {
         return Ok(crate::tile::parse(&args[1..])?.map_or(Command::TileHelp, Command::Tile));
     }
+    if args.first().is_some_and(|a| a == "check") {
+        return Ok(crate::check::parse(&args[1..])?.map_or(Command::CheckHelp, Command::Check));
+    }
+    if args.first().is_some_and(|a| a == "init") {
+        return Ok(crate::project::parse_init(&args[1..])?.map_or(Command::InitHelp, Command::Init));
+    }
     if args.first().is_some_and(|a| a == "presets") {
         return Ok(crate::presets::parse(&args[1..])?.map_or(Command::PresetsHelp, Command::Presets));
+    }
+    if args.first().is_some_and(|a| a == "comments" || a == "stars") {
+        let star = args[0] == "stars";
+        return Ok(crate::review::parse(&args[1..], star)?.map_or(Command::ReviewHelp(star), Command::Review));
+    }
+    if args.first().is_some_and(|a| a == "refine") {
+        return Ok(crate::refine::parse(&args[1..])?.map_or(Command::RefineHelp, Command::Refine));
+    }
+    if args.first().is_some_and(|a| a == "rerun") {
+        return Ok(crate::rerun::parse(&args[1..])?.map_or(Command::RerunHelp, Command::Rerun));
     }
     let mut values: Vec<(&'static str, String)> = Vec::new();
     let mut flags: Vec<&'static str> = Vec::new();
@@ -271,6 +313,7 @@ pub fn parse(args: &[String]) -> Result<Command> {
             "--fit" => "fit",
             "--no-bleed" => "no-bleed",
             "--no-enlarge" => "no-enlarge",
+            "--nearest" => "nearest",
             "--key" => "key",
             "--key-region" => "key-region",
             "--trim-density" => "trim-density",
@@ -283,6 +326,8 @@ pub fn parse(args: &[String]) -> Result<Command> {
             "--character-ref" => "character-ref",
             "--composition-ref" => "composition-ref",
             "--manifest" => "manifest",
+            "--parent" => "parent",
+            "--no-parent" => "no-parent",
             "--palette" => "palette",
             "--palette-clean" => "palette-clean",
             "-h" | "--help" => "help",
@@ -290,7 +335,7 @@ pub fn parse(args: &[String]) -> Result<Command> {
             _ => return Err(Error::usage(format!("Unknown option: {arg}"))),
         };
         // --trim and --hard-alpha take values only inline (--trim=8): a bare word after them is the prompt.
-        if matches!(key, "json" | "quiet" | "via-responses" | "dither" | "lossless" | "no-bleed" | "no-enlarge" | "manifest" | "palette-clean" | "help" | "version")
+        if matches!(key, "json" | "quiet" | "via-responses" | "dither" | "lossless" | "no-bleed" | "no-enlarge" | "nearest" | "manifest" | "no-parent" | "palette-clean" | "help" | "version")
             || (matches!(key, "trim" | "hard-alpha" | "key-cut") && inline.is_none())
         {
             flags.push(key);
@@ -342,7 +387,7 @@ pub fn parse(args: &[String]) -> Result<Command> {
             Some(threshold) => Some(transform::parse_hard_alpha(&threshold)?),
             None => flags.contains(&"hard-alpha").then_some(transform::FAINT_ALPHA),
         },
-        keys: values.iter().filter(|(k, _)| *k == "key").map(|(_, v)| transform::Key::parse(v)).collect::<Result<_>>()?,
+        keys: values.iter().filter(|(k, _)| *k == "key").map(|(_, v)| transform::Key::parse(v)).collect::<codex_img_core::error::Result<_>>()?,
         key_region: last("key-region").map(|v| transform::Region::parse(&v)).transpose()?,
         key_spread: last("key-spread").map(|v| transform::parse_key_spread(&v)).transpose()?,
         key_cut: match last("key-cut") {
@@ -358,6 +403,7 @@ pub fn parse(args: &[String]) -> Result<Command> {
         fit: last("fit").map(|v| transform::Fit::parse(&v)).transpose()?,
         no_bleed: flags.contains(&"no-bleed"),
         no_enlarge: flags.contains(&"no-enlarge"),
+        nearest: flags.contains(&"nearest"),
         palette: None,
     };
     transform.check()?;
@@ -375,6 +421,7 @@ pub fn parse(args: &[String]) -> Result<Command> {
     }
     let all = |key: &str| values.iter().filter(|(k, _)| *k == key).map(|(_, v)| v.clone()).collect::<Vec<_>>();
     let paths = |key: &str| all(key).into_iter().map(PathBuf::from).collect::<Vec<_>>();
+    if flags.contains(&"no-parent") && last("parent").is_some() { return Err(Error::usage("--parent and --no-parent cannot be combined.")); }
     let setup = Setup {
         aspect,
         view: last("view"),
@@ -393,6 +440,11 @@ pub fn parse(args: &[String]) -> Result<Command> {
         size,
         setup,
         manifest: flags.contains(&"manifest"),
+        parent: last("parent"),
+        no_parent: flags.contains(&"no-parent"),
+        replay: None,
+        transfer: None,
+        kind: None,
         palette: last("palette"),
         palette_clean: flags.contains(&"palette-clean"),
         quality: one_of("quality", last("quality"), &["low", "medium", "high", "auto"])?,
@@ -434,7 +486,7 @@ pub fn output_path(output: Option<&str>, format: Format, id: &str, index: usize,
 /// names (with `-N` suffixes, and the kept original when `transform` edits pixels) must be free,
 /// and its folder creatable. A folder `-o` is created here too; names made up in it are unique.
 /// `save_image` still refuses to overwrite a file that appears while the request runs.
-pub fn check_output(output: Option<&str>, format: Format, count: usize, transform: &transform::Transform, manifest: bool) -> Result<()> {
+pub fn check_output(output: Option<&str>, format: Format, count: usize, transform: &transform::Transform, manifest: bool, raw_manifest: bool) -> Result<()> {
     let Some(output) = output else { return Ok(()) };
     let path = std::env::current_dir().unwrap_or_default().join(output);
     if output.ends_with('/') || path.is_dir() {
@@ -445,8 +497,13 @@ pub fn check_output(output: Option<&str>, format: Format, count: usize, transfor
         let mut targets = vec![target.clone()];
         if transform.edits() {
             // The original keeps the backend's format, which is PNG unless asked for otherwise.
-            targets.push(raw_path(&target, Format::Png));
-            targets.push(raw_path(&target, format));
+            for format in [Format::Png, format] {
+                let raw = raw_path(&target, format);
+                if raw_manifest {
+                    targets.push(crate::manifest::path_for(&raw));
+                }
+                targets.push(raw);
+            }
         }
         if manifest {
             targets.push(crate::manifest::path_for(&target));
@@ -475,145 +532,17 @@ fn create_parent(path: &Path) -> Result<()> {
     }
 }
 
-/// Encode `wanted` from `bytes`; PNG output is also recompressed losslessly (best effort).
-/// Also returns the lossy quality applied, if codex-img did a lossy encode.
-fn encode_output(bytes: &[u8], actual: Format, wanted: Format, enc: &images::Encoding) -> Result<(Vec<u8>, Option<u8>)> {
-    let (converted, quality) = if images::needs_encoding(bytes, actual, wanted, enc) {
-        (images::convert(bytes, wanted, enc)?, enc.lossy_quality(wanted))
-    } else {
-        (bytes.to_vec(), None)
-    };
-    let out = if wanted == Format::Png { images::optimize_png(&converted).unwrap_or(converted) } else { converted };
-    Ok((out, quality))
+pub use codex_img_core::conversion::Converted;
+fn process(bytes: &[u8], actual: Format, wanted: Format, enc: &images::Encoding, transform: &transform::Transform, lenient: bool) -> Result<codex_img_core::conversion::Processed> {
+    codex_img_core::conversion::process(bytes, actual, wanted, enc, transform, lenient).map_err(Into::into)
 }
-
-/// Result of `process`: the encoded file, plus what the transform did.
-struct Processed {
-    bytes: Vec<u8>,
-    /// Lossy quality codex-img applied, if it did a lossy encode.
-    output_quality: Option<u8>,
-    /// Input and output pixel size; None when the bytes were passed on without decoding.
-    sizes: Option<((u32, u32), (u32, u32))>,
-    trim: Option<transform::Rect>,
-}
-
-/// Apply `transform` and encode as `wanted`; PNG output is also recompressed losslessly.
-/// `lenient` is for generated images: if they don't decode and nothing asked to reshape them, they
-/// go through `encode_output` untouched rather than failing.
-fn process(bytes: &[u8], actual: Format, wanted: Format, enc: &images::Encoding, transform: &transform::Transform, lenient: bool) -> Result<Processed> {
-    let enc = &transform.encoding(wanted, enc);
-    let rgba = match images::decode(bytes) {
-        Ok(rgba) => rgba,
-        Err(_) if lenient && !transform.edits() => {
-            let (bytes, output_quality) = encode_output(bytes, actual, wanted, enc)?;
-            return Ok(Processed { bytes, output_quality, sizes: None, trim: None });
-        }
-        Err(e) => return Err(e),
-    };
-    let input_size = rgba.dimensions();
-    let applied = transform.apply(rgba, wanted, enc)?;
-    let sizes = Some((input_size, applied.image.dimensions()));
-    let (bytes, output_quality) = if applied.changed {
-        let encoded = images::encode(&applied.image, wanted, enc)?;
-        let out = if wanted == Format::Png { images::optimize_png(&encoded).unwrap_or(encoded) } else { encoded };
-        (out, enc.lossy_quality(wanted))
-    } else {
-        encode_output(bytes, actual, wanted, enc)?
-    };
-    Ok(Processed { bytes, output_quality, sizes, trim: applied.trim })
-}
-
-/// What `save_converted` wrote.
-pub struct Converted {
-    pub path: PathBuf,
-    pub input_size: (u32, u32),
-    pub size: (u32, u32),
-    /// Lossy quality codex-img applied, if it did a lossy encode.
-    pub output_quality: Option<u8>,
-    pub trim: Option<transform::Rect>,
-    /// With `overwrite`: the file already held exactly these bytes, so it was left alone.
-    pub unchanged: bool,
-}
-
-/// `convert` subcommand: apply `transform` and write `bytes` as `wanted` to a new file, or with
-/// `overwrite` replace an existing one.
-/// Unlike generated images, a local input that doesn't fully decode is an error, not something to
-/// copy through: the fast paths (same format, best-effort optimization) would otherwise pass it on.
 pub fn save_converted(bytes: &[u8], wanted: Format, enc: &images::Encoding, transform: &transform::Transform, path: &Path, overwrite: bool) -> Result<Converted> {
-    let actual = images::sniff(bytes).ok_or_else(|| Error::other("Input is not a PNG, JPEG or WebP image."))?;
-    let processed = process(bytes, actual, wanted, enc, transform, false)?;
-    let (input_size, size) = processed.sizes.ok_or_else(|| Error::other("Input image could not be decoded."))?;
-    let unchanged = !write_output(path, &processed.bytes, overwrite)?;
-    Ok(Converted { path: path.to_path_buf(), input_size, size, output_quality: processed.output_quality, trim: processed.trim, unchanged })
+    codex_img_core::conversion::save_converted(bytes, wanted, enc, transform, path, overwrite).map_err(Into::into)
 }
-
-/// Write `bytes` to a new file at `path`, creating its directory. With `overwrite`, replace an
-/// existing file instead; returns false when it already held exactly these bytes.
 pub fn write_output(path: &Path, bytes: &[u8], overwrite: bool) -> Result<bool> {
-    create_parent(path)?;
-    if overwrite {
-        write_replacing(path, bytes)
-    } else {
-        write_new(path, bytes).map(|()| true)
-    }
+    codex_img_core::output::write_output(path, bytes, overwrite).map_err(Into::into)
 }
-
-/// Replace `path` with `bytes` through a temporary file and a rename, so nothing ever sees half a
-/// file. Returns false without writing when the file already holds exactly these bytes: output is
-/// deterministic, so re-running a pipeline leaves untouched files alone (git, CDN uploads).
-fn write_replacing(path: &Path, bytes: &[u8]) -> Result<bool> {
-    if std::fs::read(path).is_ok_and(|old| old == bytes) {
-        return Ok(false);
-    }
-    let temp = temp_path(path);
-    write_file(&temp, bytes)?;
-    std::fs::rename(&temp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&temp);
-        Error::other(format!("Could not replace {}: {e}", path.display()))
-    })?;
-    Ok(true)
-}
-
-/// Write `bytes` to `path`, which must not exist yet. The file only appears under its name once
-/// it's complete: a half-written raw image would look already generated to `batch`. So the bytes go
-/// to a temporary file first, which is then hard-linked into place; unlike a rename, a link never
-/// replaces an existing file.
-fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
-    let temp = temp_path(path);
-    write_file(&temp, bytes)?;
-    let linked = std::fs::hard_link(&temp, path);
-    let _ = std::fs::remove_file(&temp);
-    match linked {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(Error::other(format!("Could not create {}: {e}", path.display()))),
-        // A filesystem without hard links (FAT, some network shares): create the file directly.
-        // write_file still removes it if the write fails.
-        Err(_) => write_file(path, bytes),
-    }
-}
-
-/// A hidden temporary name next to `path`, on the same filesystem.
-fn temp_path(path: &Path) -> PathBuf {
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    path.with_file_name(format!(".{name}.{}.tmp", &util::random_id()[..8]))
-}
-
-/// Create `path` (never replacing a file) and write `bytes` to it, removing it again if the write
-/// fails, for example on a full disk.
-fn write_file(path: &Path, bytes: &[u8]) -> Result<()> {
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|e| Error::other(format!("Could not create {}: {e}", path.display())))?;
-    if let Err(e) = file.write_all(bytes) {
-        // Closed first: Windows can't remove an open file.
-        drop(file);
-        let _ = std::fs::remove_file(path);
-        return Err(Error::other(format!("Could not write {}: {e}", path.display())));
-    }
-    Ok(())
-}
+fn write_new(path: &Path, bytes: &[u8]) -> Result<()> { codex_img_core::output::write_new(path, bytes).map_err(Into::into) }
 
 /// Write the image as `wanted`, applying `transform` and converting (and quantizing, with
 /// `colors`) when needed; PNG output is also recompressed losslessly. If the bytes can't be
@@ -841,6 +770,8 @@ mod tests {
         assert_eq!(parse(&args(&["batch", "-h"])).unwrap(), Command::BatchHelp);
         assert!(matches!(parse(&args(&["tile", "sky.png", "-o", "t.png"])).unwrap(), Command::Tile(_)));
         assert_eq!(run(&["tile floor texture"]).prompt, "tile floor texture", "a quoted prompt starting with tile");
+        assert!(matches!(parse(&args(&["init", "--no-events"])).unwrap(), Command::Init(_)));
+        assert_eq!(parse(&args(&["init", "--help"])).unwrap(), Command::InitHelp);
         assert_eq!(parse(&args(&["-h"])).unwrap(), Command::Help);
         assert_eq!(parse(&args(&["--version"])).unwrap(), Command::Version);
     }
@@ -920,50 +851,36 @@ mod tests {
     }
 
     #[test]
-    fn new_files_appear_whole_and_never_replace_one() {
-        let dir = crate::auth::tests::temp_dir("write-new");
-        write_new(&dir.join("a.png"), b"first").unwrap();
-        let err = write_new(&dir.join("a.png"), b"second").unwrap_err();
-        assert!(err.message.contains("Could not create"), "{}", err.message);
-        assert_eq!(std::fs::read(dir.join("a.png")).unwrap(), b"first");
-        assert!(write_output(&dir.join("a.png"), b"third", true).unwrap());
-        assert_eq!(std::fs::read(dir.join("a.png")).unwrap(), b"third");
-        // No temporary files are left behind, whichever way it went.
-        let names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
-        assert_eq!(names, ["a.png"]);
-    }
-
-    #[test]
     fn check_output_refuses_taken_names_before_any_request() {
         let dir = crate::auth::tests::temp_dir("check-output");
         let out = dir.join("new/car.png");
         let at = |p: &Path| p.display().to_string();
         let none = transform::Transform::default();
         let trim = transform::Transform { trim: Some(0), ..Default::default() };
-        check_output(Some(&at(&out)), Format::Png, 1, &none, false).unwrap();
+        check_output(Some(&at(&out)), Format::Png, 1, &none, false, false).unwrap();
         assert!(dir.join("new").is_dir(), "the folder is created up front");
 
         std::fs::write(dir.join("new/car.raw.png"), b"x").unwrap();
-        check_output(Some(&at(&out)), Format::Png, 1, &none, false).unwrap();
-        let err = check_output(Some(&at(&out)), Format::Png, 1, &trim, false).unwrap_err();
+        check_output(Some(&at(&out)), Format::Png, 1, &none, false, false).unwrap();
+        let err = check_output(Some(&at(&out)), Format::Png, 1, &trim, false, false).unwrap_err();
         assert!(err.message.contains("car.raw.png already exists"), "{}", err.message);
 
         std::fs::write(dir.join("new/car-2.png"), b"x").unwrap();
-        check_output(Some(&at(&out)), Format::Png, 1, &none, false).unwrap();
-        assert!(check_output(Some(&at(&out)), Format::Png, 2, &none, false).unwrap_err().message.contains("car-2.png"));
+        check_output(Some(&at(&out)), Format::Png, 1, &none, false, false).unwrap();
+        assert!(check_output(Some(&at(&out)), Format::Png, 2, &none, false, false).unwrap_err().message.contains("car-2.png"));
 
         // A folder gets new, unique names.
-        check_output(Some(&at(&dir.join("new"))), Format::Png, 3, &trim, false).unwrap();
-        check_output(None, Format::Png, 1, &trim, false).unwrap();
+        check_output(Some(&at(&dir.join("new"))), Format::Png, 3, &trim, false, false).unwrap();
+        check_output(None, Format::Png, 1, &trim, false, false).unwrap();
         std::fs::write(dir.join("noted.png.json"), b"{}").unwrap();
-        assert!(check_output(Some(&at(&dir.join("noted.png"))), Format::Png, 1, &none, true).unwrap_err().message.contains("noted.png.json"));
-        check_output(Some(&at(&dir.join("noted.png"))), Format::Png, 1, &none, false).unwrap();
+        assert!(check_output(Some(&at(&dir.join("noted.png"))), Format::Png, 1, &none, true, false).unwrap_err().message.contains("noted.png.json"));
+        check_output(Some(&at(&dir.join("noted.png"))), Format::Png, 1, &none, false, false).unwrap();
         // A folder -o is created, and one that can't be is refused.
-        check_output(Some(&format!("{}/", at(&dir.join("made")))), Format::Png, 1, &none, false).unwrap();
+        check_output(Some(&format!("{}/", at(&dir.join("made")))), Format::Png, 1, &none, false, false).unwrap();
         assert!(dir.join("made").is_dir());
         // A file where the folder should be.
         std::fs::write(dir.join("blocked"), b"x").unwrap();
-        assert!(check_output(Some(&at(&dir.join("blocked/car.png"))), Format::Png, 1, &none, false).is_err());
-        assert!(check_output(Some(&format!("{}/", at(&dir.join("blocked")))), Format::Png, 1, &none, false).is_err());
+        assert!(check_output(Some(&at(&dir.join("blocked/car.png"))), Format::Png, 1, &none, false, false).is_err());
+        assert!(check_output(Some(&format!("{}/", at(&dir.join("blocked")))), Format::Png, 1, &none, false, false).is_err());
     }
 }

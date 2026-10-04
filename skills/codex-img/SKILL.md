@@ -13,6 +13,7 @@ description: Generate or edit raster images (PNG/JPEG/WebP) with the `codex-img`
 |---|---|
 | Writing or refining any prompt; use-case recipes (icons, products, UI, slides, edits) | [references/prompting.md](references/prompting.md) |
 | Game sprites, a set of assets, camera angles, characters, palettes, `batch`, `sheet`, `tile` | [references/game-assets.md](references/game-assets.md) |
+| Project history, manifests, rerun, refine, comments and stars | [references/projects.md](references/projects.md) |
 | Changing format, size or file weight of existing images, removing a painted-in background | [references/convert.md](references/convert.md) |
 | `codex-img` is not installed (`command -v codex-img` finds nothing) | [references/fallback.md](references/fallback.md) |
 
@@ -25,6 +26,16 @@ codex-img "<prompt>" -i <image> -o <path> --json               # edit an image (
 codex-img "<prompt>" --style-ref <image> -o <path> --json      # new image in that image's style
 codex-img "<prompt>" -n 3 -o <dir>/ --json                     # 3 variations in parallel (only if asked)
 codex-img presets                                              # views, styles, characters, palettes; no quota
+codex-img rerun <image> -o <new-path> --json                  # same request again, costs 1 image
+codex-img refine <image> "<change>" -o <new-path> --json      # constrained edit, costs 1 image
+codex-img batch <spec.json> --reroll <key> --dry-run --json    # plan a re-roll before spending quota
+codex-img batch <spec.json> --reroll <key> --expect-images 1  # enforce the reviewed cost
+codex-img batch <spec.json> --restore <key> <version>          # restore locally; preserve source
+codex-img init [folder] [--no-events] --json                 # start a project (writes codex-img.json), no quota
+codex-img check <spec-or-presets.json> --json                # validate project files, no quota
+codex-img comments --json                                   # read project review comments, no quota
+codex-img stars --json                                      # find keepers, no quota
+codex-img presets list --json                               # full presets and palette colours, no quota
 codex-img status --json                                        # check login, no quota
 codex-img convert <file> -o <out.webp> --json                  # convert/trim/resize locally, no quota
 ```
@@ -41,8 +52,11 @@ codex-img convert <file> -o <out.webp> --json                  # convert/trim/re
 | `--palette` | A fixed palette: hex codes, a file, or a preset (`pico-8`, `nes`, `sweetie-16`, ...). Adds the hex codes to the prompt and snaps every colour to the palette. Never name a palette in the prompt without it: the model doesn't know the colours. |
 | `-f` | `png` (default), `jpeg`, or `webp` (lossy, keeps transparency). For images going on a website, lossy `webp` is usually the smallest by far. |
 | `-c` | Quantize PNG to 2–256 colours. For icons, stickers and flat art, `-c 64` to `-c 256` usually cuts the file 10x or more with no visible change. Not for photos or gradients. |
-| `--trim`, `--resize`, `--hard-alpha` | Applied before saving, as in `convert`; useful for sprites: `-b transparent --trim=4 --resize 400x`. These and `--palette` keep the untouched original as `<name>.raw.png` (`rawPath` in the JSON); keep it, since there's no seed to regenerate it. |
+| `--trim`, `--resize`, `--hard-alpha` | Applied before saving, as in `convert`; add `--nearest` for whole-number pixel-art upscaling; useful for sprites: `-b transparent --trim=4 --resize 400x`. These and `--palette` keep the untouched original as `<name>.raw.png` (`rawPath` in the JSON); keep it, since there's no seed to regenerate it. |
+| `--parent`, `--no-parent` | Explicit version parent, or disable the automatic parent for an edit with one `-i`. |
 | `-q` | `low` \| `medium` \| `high` \| `auto`; a hint, and the subscription caps it at medium. |
+
+Inside a project (the nearest `codex-img.json` above the working folder; `codex-img init` makes one), runs are saved in `.codex-img/runs/`, unless the project sets `"events": false`, and generated images get `<image>.json` manifests automatically. Keep these records with the images. Saved contact sheets also produce free run events. `run.started.generation` distinguishes backend work from free work; `job.done.historyPath` records an archived batch raw. Outside a project, use `--manifest` when a plain run needs a record. See [references/projects.md](references/projects.md) for paths and logging controls.
 
 Use `-` as the prompt to read it from stdin, which avoids shell quoting problems:
 
@@ -52,7 +66,17 @@ multi-line prompt here, with "quotes" and $symbols
 EOF
 ```
 
-A prompt whose first word is `convert`, `sheet`, `batch`, `tile` or `presets` runs that subcommand instead, so start the prompt with another word.
+A prompt whose first word is `convert`, `sheet`, `batch`, `tile`, `rerun`, `refine`, `comments`, `stars`, `check` or `presets` runs that subcommand instead, so start the prompt with another word.
+
+Batch `--inspect --json` includes `edited`: refined raws compare the spec against their
+original generation, and missing parent manifests give `changed: false, edited: true`.
+Pending unactivated files are excluded from history. Restore accepts images without
+manifests, preserves the source, and does not copy its comment or star. Clear or move a
+non-empty current raw manifest comment before restoring; batch comments belong in the spec.
+Batch operations lock per canonical spec. Use `--no-wait` (also with `refine --batch`) to
+fail immediately if that spec is busy; otherwise stderr announces the wait. Conversion-only
+runs take one spec lock for the conversion phase, allowing parallel workers; a busy spec
+fails once before workers start under `--no-wait`. See [references/projects.md](references/projects.md).
 
 ## Workflow
 
@@ -68,7 +92,8 @@ A prompt whose first word is `convert`, `sheet`, `batch`, `tile` or `presets` ru
 
      Use the `path` from the JSON.
 3. **Look at the result** (open or read the image file) before reporting back. Check that it matches the request, especially any text, counts and composition.
-4. To refine, run again with the previous output as `-i` and a prompt that changes one thing ("change only X; keep everything else unchanged").
+4. For another variation of the same request, use `rerun <image>` (only when asked). Missing references always stop; `--anyway` only permits changed references, with warnings. Older manifests warn and replay the settings available.
+5. To refine a saved image, use `refine <image> "<change>"`, or `--from-comment` for its saved note (only when asked). It keeps settings and current named presets, warns about drift and links the new version. Missing presets/references stop; failures preserve the comment.
 
 ## Exit codes, and what to do
 

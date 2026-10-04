@@ -21,6 +21,7 @@ pub struct ConvertOptions {
     pub quiet: bool,
     /// Replace existing output files (never the input).
     pub force: bool,
+    pub mask_out: Option<String>,
 }
 
 pub fn help() -> &'static str {
@@ -51,6 +52,7 @@ Options:
       --fit <mode>          How WxH handles another aspect ratio: inside (default,
                             fits in the box), cover (fills it, crops the centre),
                             contain (fits, pads with transparency), fill (stretches)
+      --nearest             Copy pixels for whole-number upscaling of pixel art
       --no-enlarge          Only shrink: --resize leaves smaller images at their size
       --key <colour>        Make an unwanted background transparent: the sea painted
                             under a boat, the sky behind a building. Pixels of this
@@ -110,6 +112,8 @@ Options:
                             other tools can't pull a dark halo into the edges
       --force               Replace existing output files (never an input). A file
                             that already holds the same bytes is left untouched
+      --mask-out <png>      Write a black/white mask of pixels removed by --key,
+                            at the input size (white is removed). One input only
       --json                Print one JSON object per file to stdout
       --quiet               No progress on stderr
 
@@ -129,7 +133,7 @@ Examples:
 }
 
 pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
-    let mut opts = ConvertOptions { inputs: Vec::new(), output: None, format: None, encoding: images::Encoding::default(), transform: Transform::default(), json: false, quiet: false, force: false };
+    let mut opts = ConvertOptions { inputs: Vec::new(), output: None, format: None, encoding: images::Encoding::default(), transform: Transform::default(), json: false, quiet: false, force: false, mask_out: None };
     let (mut palette, mut palette_clean) = (None, false);
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -160,6 +164,7 @@ pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
             "--fit" => opts.transform.fit = Some(Fit::parse(&value()?)?),
             "--no-bleed" => opts.transform.no_bleed = true,
             "--no-enlarge" => opts.transform.no_enlarge = true,
+            "--nearest" if inline.is_none() => opts.transform.nearest = true,
             "--key" => opts.transform.keys.push(transform::Key::parse(&value()?)?),
             "--key-region" => opts.transform.key_region = Some(transform::Region::parse(&value()?)?),
             "--key-spread" => opts.transform.key_spread = Some(transform::parse_key_spread(&value()?)?),
@@ -174,12 +179,19 @@ pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
             "--json" => opts.json = true,
             "--quiet" => opts.quiet = true,
             "--force" => opts.force = true,
+            "--mask-out" => opts.mask_out = Some(value()?),
             "-h" | "--help" => return Ok(None),
             _ => return Err(Error::usage(format!("Unknown convert option: {arg}"))),
         }
     }
     if opts.inputs.is_empty() {
         return Err(Error::usage("convert needs at least one input file."));
+    }
+    if opts.mask_out.is_some() && (opts.inputs.len() != 1 || opts.transform.keys.is_empty()) {
+        return Err(Error::usage("--mask-out needs one input and --key."));
+    }
+    if opts.mask_out.as_deref().is_some_and(|path| !Path::new(path).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("png"))) {
+        return Err(Error::usage("--mask-out must name a PNG file."));
     }
     let output_is_file = opts.output.as_deref().is_some_and(|o| !o.ends_with('/') && !Path::new(o).is_dir());
     if output_is_file && opts.inputs.len() > 1 {
@@ -258,6 +270,11 @@ fn convert_one(input: &Path, opts: &ConvertOptions) -> Result<serde_json::Value>
     if !opts.force && target.exists() {
         return Err(Error::other(format!("{} already exists; add --force to replace it.", target.display())));
     }
+    if let Some(mask) = &opts.mask_out {
+        let mask = Path::new(mask);
+        if same_file(mask, input) || same_file(mask, &target) { return Err(Error::usage("The mask must be separate from the input and output.")); }
+        if !opts.force && mask.exists() { return Err(Error::other(format!("{} already exists.", mask.display()))); }
+    }
     let converted = cli::save_converted(&bytes, format, &opts.encoding, &opts.transform, &target, opts.force)?;
     let written = std::fs::metadata(&converted.path).map(|m| m.len()).unwrap_or_default();
     let size = |(w, h): (u32, u32)| format!("{w}x{h}");
@@ -271,6 +288,16 @@ fn convert_one(input: &Path, opts: &ConvertOptions) -> Result<serde_json::Value>
         "inputSize": size(converted.input_size),
         "durationMs": started.elapsed().as_millis() as u64,
     });
+    info["hardAlphaPixels"] = json!(converted.changes.hard_alpha_pixels);
+    info["keyedOutPixels"] = json!(converted.changes.keyed_out_pixels);
+    if let Some(colors) = converted.changes.palette_colors { info["paletteColors"] = json!(colors); }
+    if let Some(path) = &opts.mask_out {
+        let mask = converted.changes.key_mask.as_ref().ok_or_else(|| Error::other("The key mask was not produced."))?;
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageLuma8(mask.clone()).write_to(&mut bytes, image::ImageFormat::Png).map_err(|e| Error::other(e.to_string()))?;
+        cli::write_output(Path::new(path), bytes.get_ref(), opts.force)?;
+        info["maskPath"] = json!(path);
+    }
     // Where the trimmed content sat in the input, to keep sprite anchors in place.
     if let Some(rect) = converted.trim {
         info["trim"] = json!({"x": rect.x, "y": rect.y, "width": rect.width, "height": rect.height});
@@ -291,9 +318,12 @@ fn convert_one(input: &Path, opts: &ConvertOptions) -> Result<serde_json::Value>
 /// Converts each input in turn; a failure is reported and the rest still run. Returns the exit code.
 pub fn run(opts: &ConvertOptions) -> i32 {
     let mut exit_code = 0;
+    let run = crate::events::Run::start("convert", opts.inputs.len(), json!({}));
     for input in &opts.inputs {
+        let job = run.job(json!({"prompt":"Local conversion","parent":crate::events::absolute(Path::new(input)),"inputs":[{"path":crate::events::absolute(Path::new(input)),"role":"input"}],"request":{}}));
         match convert_one(Path::new(input), opts) {
             Ok(info) => {
+                job.done(json!({"path":crate::events::absolute(Path::new(info["path"].as_str().unwrap())),"rawPath":crate::events::absolute(Path::new(input)),"durationMs":info["durationMs"],"size":info["size"]}));
                 if opts.json {
                     println!("{info}");
                 } else {
@@ -306,11 +336,13 @@ pub fn run(opts: &ConvertOptions) -> i32 {
                 }
             }
             Err(error) => {
+                job.failed(&error);
                 eprintln!("codex-img: {error}");
                 exit_code = exit_code.max(error.kind.exit_code());
             }
         }
     }
+    run.end(None);
     exit_code
 }
 
@@ -321,6 +353,24 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn reports_key_and_alpha_changes_and_masks_before_trim_and_resize() {
+        let dir = crate::auth::tests::temp_dir("convert-mask");
+        let input = dir.join("input.png"); let output = dir.join("output.png"); let mask = dir.join("mask.png");
+        let mut pixels = image::RgbaImage::from_pixel(4, 3, image::Rgba([0, 0, 255, 255]));
+        pixels.put_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
+        pixels.put_pixel(2, 1, image::Rgba([255, 0, 0, 10]));
+        pixels.save(&input).unwrap();
+        let options = parse(&[input.display().to_string(), "-o".into(), output.display().to_string(), "--key=blue".into(), "--hard-alpha".into(), "--trim".into(), "--resize=2x2".into(), "--mask-out".into(), mask.display().to_string()]).unwrap().unwrap();
+        let info = convert_one(&input, &options).unwrap();
+        assert_eq!(info["keyedOutPixels"], 10); assert_eq!(info["hardAlphaPixels"], 1); assert!(info["trim"].is_object());
+        let removed = image::open(&mask).unwrap().to_luma8(); assert_eq!(removed.dimensions(), (4, 3));
+        assert_eq!(removed.get_pixel(0, 0)[0], 255); assert_eq!(removed.get_pixel(1, 1)[0], 0); assert_eq!(removed.get_pixel(2, 1)[0], 0);
+        assert_eq!(image::open(input).unwrap().to_rgba8(), pixels);
+        assert!(parse(&args(&["a.png", "b.png", "--key=blue", "--mask-out=m.png"])).is_err());
+        assert!(parse(&args(&["a.png", "--mask-out=m.png"])).is_err());
     }
 
     fn usage_error(list: &[&str]) -> String {

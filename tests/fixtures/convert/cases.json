@@ -1,0 +1,712 @@
+[
+  {
+    "name": "png",
+    "input": "source.png",
+    "output": "golden/png.png",
+    "args": [],
+    "report": {
+      "format": "png",
+      "bytes": 527,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0
+    }
+  },
+  {
+    "name": "trim",
+    "input": "source.png",
+    "output": "golden/trim.png",
+    "args": [
+      "--trim"
+    ],
+    "report": {
+      "format": "png",
+      "bytes": 312,
+      "inputBytes": 3110,
+      "size": "42x34",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0,
+      "trim": {
+        "x": 3,
+        "y": 4,
+        "width": 42,
+        "height": 34
+      }
+    }
+  },
+  {
+    "name": "trim-padding",
+    "input": "source.png",
+    "output": "golden/trim-padding.png",
+    "args": [
+      "--trim=3"
+    ],
+    "report": {
+      "format": "png",
+      "bytes": 528,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0,
+      "trim": {
+        "x": 0,
+        "y": 1,
+        "width": 48,
+        "height": 40
+      }
+    }
+  },
+  {
+    "name": "trim-density",
+    "input": "source.png",
+    "output": "golden/trim-density.png",
+    "args": [
+      "--trim",
+      "--trim-density=0.15"
+    ],
+    "report": {
+      "format": "png",
+      "bytes": 211,
+      "inputBytes": 3110,
+      "size": "42x31",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0,
+      "trim": {
+        "x": 3,
+        "y": 4,
+        "width": 42,
+        "height": 31
+      }
+    }
+  },
+  {
+    "name": "trim-density-all",
+    "input": "source.png",
+    "output": "golden/trim-density-all.png",
+    "args": [
+      "--trim",
+      "--trim-density=all:0.25"
+    ],
+    "report": {
+      "format": "png",
+      "bytes": 211,
+      "inputBytes": 3110,
+      "size": "42x31",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0,
+      "trim": {
+        "x": 3,
+        "y": 4,
+        "width": 42,
+        "height": 31
+      }
+    }
+  },
+  {
+    "name": "hard-alpha",
+    "input": "source.png",
+    "output": "golden/hard-alpha.png",
+    "args": [
+      "--hard-alpha"
+    ],
+    "report": {
+      "format": "png",
+      "bytes": 504,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 9,
+      "keyedOutPixels": 0
+    }
+  },
+  {
+    "name": "hard-alpha-threshold",
+    "input": "source.png",
+    "output": "golden/hard-alpha-threshold.png",
+    "args": [
+      "--hard-alpha=127"
+    ],
+    "report": {
+      "format": "png",
+      "bytes": 581,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 23,
+      "keyedOutPixels": 0
+    }
+  },
+  {
+    "name": "key-auto",
+    "input": "source.png",
+    "output": "golden/key-auto.png",
+    "args": [
+      "--key=auto:24"
+    ],
+    "mask": "golden/key-auto-mask.png",
+    "report": {
+      "format": "png",
+      "bytes": 1091,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 834
+    }
+  },
+  {
+    "name": "key-named",
+    "input": "source.png",
+    "output": "golden/key-named.png",
+    "args": [
+      "--key=cyan"
+    ],
+    "mask": "golden/key-named-mask.png",
+    "report": {
+      "format": "png",
+      "bytes": 995,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 612
+    }
+  },
+  {
+    "name": "key-rgb",
+    "input": "source.png",
+    "output": "golden/key-rgb.png",
+    "args": [
+      "--key=#20B4C8:48"
+    ],
+    "mask": "golden/key-rgb-mask.png",
+    "report": {
+      "format": "png",
+      "bytes": 1144,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 835
+    }
+  },
+  {
+    "name": "key-region",
+    "input": "source.png",
+    "output": "golden/key-region.png",
+    "args": [
+      "--key=cyan",
+      "--key-region=bottom:60%"
+    ],
+    "mask": "golden/key-region-mask.png",
+    "report": {
+      "format": "png",
+      "bytes": 955,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 496
+    }
+  },
+  {
+    "name": "key-cut",
+    "input": "source.png",
+    "output": "golden/key-cut.png",
+    "args": [
+      "--key=cyan",
+      "--key-region=bottom:60%",
+      "--key-cut=40%"
+    ],
+    "mask": "golden/key-cut-mask.png",
+    "report": {
+      "format": "png",
+      "bytes": 955,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 496
+    }
+  },
+  {
+    "name": "key-spread",
+    "input": "source.png",
+    "output": "golden/key-spread.png",
+    "args": [
+      "--key=cyan",
+      "--key-region=all:30%",
+      "--key-spread=24"
+    ],
+    "mask": "golden/key-spread-mask.png",
+    "report": {
+      "format": "png",
+      "bytes": 1091,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 834
+    }
+  },
+  {
+    "name": "key-multiple",
+    "input": "source.png",
+    "output": "golden/key-multiple.png",
+    "args": [
+      "--key=cyan",
+      "--key=blue"
+    ],
+    "mask": "golden/key-multiple-mask.png",
+    "report": {
+      "format": "png",
+      "bytes": 1308,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 872
+    }
+  },
+  {
+    "name": "palette",
+    "input": "source.png",
+    "output": "golden/palette.png",
+    "args": [
+      "--palette=#000000,#FFFFFF,#DD3344,#116688,#22BBCC,#886633"
+    ],
+    "report": {
+      "format": "png",
+      "bytes": 227,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 23,
+      "keyedOutPixels": 0,
+      "paletteColors": 6
+    }
+  },
+  {
+    "name": "palette-clean",
+    "input": "source.png",
+    "output": "golden/palette-clean.png",
+    "args": [
+      "--palette=#000000,#FFFFFF,#DD3344,#116688,#22BBCC,#886633",
+      "--palette-clean"
+    ],
+    "report": {
+      "format": "png",
+      "bytes": 232,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 23,
+      "keyedOutPixels": 0,
+      "paletteColors": 6
+    }
+  },
+  {
+    "name": "colors",
+    "input": "source.png",
+    "output": "golden/colors.png",
+    "args": [
+      "--colors=16"
+    ],
+    "report": {
+      "format": "png",
+      "bytes": 310,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0,
+      "colors": 16
+    }
+  },
+  {
+    "name": "colors-dither",
+    "input": "source.png",
+    "output": "golden/colors-dither.png",
+    "args": [
+      "--colors=16",
+      "--dither"
+    ],
+    "report": {
+      "format": "png",
+      "bytes": 464,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0,
+      "colors": 16
+    }
+  },
+  {
+    "name": "resize-width",
+    "input": "source.png",
+    "output": "golden/resize-width.png",
+    "args": [
+      "--resize=24x"
+    ],
+    "report": {
+      "format": "png",
+      "bytes": 1037,
+      "inputBytes": 3110,
+      "size": "24x20",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0
+    }
+  },
+  {
+    "name": "resize-height",
+    "input": "source.png",
+    "output": "golden/resize-height.png",
+    "args": [
+      "--resize=x24"
+    ],
+    "report": {
+      "format": "png",
+      "bytes": 1200,
+      "inputBytes": 3110,
+      "size": "29x24",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0
+    }
+  },
+  {
+    "name": "resize-inside",
+    "input": "source.png",
+    "output": "golden/resize-inside.png",
+    "args": [
+      "--resize=24x32",
+      "--fit=inside"
+    ],
+    "report": {
+      "format": "png",
+      "bytes": 1037,
+      "inputBytes": 3110,
+      "size": "24x20",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0
+    }
+  },
+  {
+    "name": "resize-cover",
+    "input": "source.png",
+    "output": "golden/resize-cover.png",
+    "args": [
+      "--resize=24x32",
+      "--fit=cover"
+    ],
+    "report": {
+      "format": "png",
+      "bytes": 1260,
+      "inputBytes": 3110,
+      "size": "24x32",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0
+    }
+  },
+  {
+    "name": "resize-contain",
+    "input": "source.png",
+    "output": "golden/resize-contain.png",
+    "args": [
+      "--resize=24x32",
+      "--fit=contain"
+    ],
+    "report": {
+      "format": "png",
+      "bytes": 1324,
+      "inputBytes": 3110,
+      "size": "24x32",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0
+    }
+  },
+  {
+    "name": "resize-fill",
+    "input": "source.png",
+    "output": "golden/resize-fill.png",
+    "args": [
+      "--resize=24x32",
+      "--fit=fill"
+    ],
+    "report": {
+      "format": "png",
+      "bytes": 1368,
+      "inputBytes": 3110,
+      "size": "24x32",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0
+    }
+  },
+  {
+    "name": "no-enlarge",
+    "input": "source.png",
+    "output": "golden/no-enlarge.png",
+    "args": [
+      "--resize=96x80",
+      "--no-enlarge"
+    ],
+    "report": {
+      "format": "png",
+      "bytes": 527,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0
+    }
+  },
+  {
+    "name": "nearest-up",
+    "input": "source.png",
+    "output": "golden/nearest-up.png",
+    "args": [
+      "--resize=96x80",
+      "--nearest"
+    ],
+    "report": {
+      "format": "png",
+      "bytes": 794,
+      "inputBytes": 3110,
+      "size": "96x80",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0
+    }
+  },
+  {
+    "name": "nearest-down",
+    "input": "source.png",
+    "output": "golden/nearest-down.png",
+    "args": [
+      "--resize=24x20",
+      "--nearest"
+    ],
+    "report": {
+      "format": "png",
+      "bytes": 279,
+      "inputBytes": 3110,
+      "size": "24x20",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0
+    }
+  },
+  {
+    "name": "no-bleed",
+    "input": "source.png",
+    "output": "golden/no-bleed.png",
+    "args": [
+      "--no-bleed"
+    ],
+    "report": {
+      "format": "png",
+      "bytes": 284,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0
+    }
+  },
+  {
+    "name": "combined",
+    "input": "source.png",
+    "output": "golden/combined.png",
+    "args": [
+      "--hard-alpha=40",
+      "--key=cyan",
+      "--key-region=bottom:50%",
+      "--key-cut=30%",
+      "--key-spread=16",
+      "--trim=2",
+      "--trim-density=bottom:0.15",
+      "--palette=#000000,#FFFFFF,#DD3344,#116688,#22BBCC,#886633",
+      "--palette-clean",
+      "--resize=32x32",
+      "--fit=contain",
+      "--nearest"
+    ],
+    "mask": "golden/combined-mask.png",
+    "report": {
+      "format": "png",
+      "bytes": 194,
+      "inputBytes": 3110,
+      "size": "32x32",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 17,
+      "keyedOutPixels": 432,
+      "paletteColors": 6,
+      "trim": {
+        "x": 1,
+        "y": 2,
+        "width": 46,
+        "height": 27
+      }
+    }
+  },
+  {
+    "name": "jpeg",
+    "input": "source.png",
+    "output": "golden/jpeg.jpeg",
+    "args": [
+      "--format=jpeg"
+    ],
+    "report": {
+      "format": "jpeg",
+      "bytes": 2506,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0,
+      "outputQuality": 90
+    }
+  },
+  {
+    "name": "jpeg-quality",
+    "input": "source.png",
+    "output": "golden/jpeg-quality.jpeg",
+    "args": [
+      "--format=jpeg",
+      "--output-quality=63"
+    ],
+    "report": {
+      "format": "jpeg",
+      "bytes": 1597,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0,
+      "outputQuality": 63
+    }
+  },
+  {
+    "name": "webp",
+    "input": "source.png",
+    "output": "golden/webp.webp",
+    "args": [
+      "--format=webp"
+    ],
+    "report": {
+      "format": "webp",
+      "bytes": 722,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0,
+      "outputQuality": 80
+    }
+  },
+  {
+    "name": "webp-quality",
+    "input": "source.png",
+    "output": "golden/webp-quality.webp",
+    "args": [
+      "--format=webp",
+      "--output-quality=63"
+    ],
+    "report": {
+      "format": "webp",
+      "bytes": 594,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0,
+      "outputQuality": 63
+    }
+  },
+  {
+    "name": "webp-lossless",
+    "input": "source.png",
+    "output": "golden/webp-lossless.webp",
+    "args": [
+      "--format=webp",
+      "--lossless"
+    ],
+    "report": {
+      "format": "webp",
+      "bytes": 702,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0
+    }
+  },
+  {
+    "name": "palette-webp",
+    "input": "source.png",
+    "output": "golden/palette-webp.webp",
+    "args": [
+      "--palette=#000000,#FFFFFF,#DD3344,#116688,#22BBCC,#886633",
+      "--format=webp",
+      "--lossless"
+    ],
+    "report": {
+      "format": "webp",
+      "bytes": 178,
+      "inputBytes": 3110,
+      "size": "48x40",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 23,
+      "keyedOutPixels": 0,
+      "paletteColors": 6
+    }
+  },
+  {
+    "name": "jpeg-input",
+    "input": "source.jpeg",
+    "output": "golden/jpeg-input.png",
+    "args": [
+      "--format=png",
+      "--resize=24x"
+    ],
+    "report": {
+      "format": "png",
+      "bytes": 987,
+      "inputBytes": 2506,
+      "size": "24x20",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0
+    }
+  },
+  {
+    "name": "webp-input",
+    "input": "source.webp",
+    "output": "golden/webp-input.png",
+    "args": [
+      "--format=png",
+      "--resize=24x"
+    ],
+    "report": {
+      "format": "png",
+      "bytes": 1318,
+      "inputBytes": 722,
+      "size": "24x20",
+      "inputSize": "48x40",
+      "hardAlphaPixels": 0,
+      "keyedOutPixels": 0
+    }
+  }
+]

@@ -10,7 +10,7 @@ python3 <skill-dir>/scripts/codex_img.py "<prompt>" -o <path>.png --json
 
 **Refused before any quota is spent:**
 - **Any output format but PNG:** `-f`, and any `-o` extension other than `.png`.
-- **Processing:** `-c`, `--dither`, `--output-quality`, `--lossless`, `--trim`, `--resize`, `--fit`, `--hard-alpha`, `--no-enlarge` and `--no-bleed`.
+- **Processing:** `-c`, `--dither`, `--output-quality`, `--lossless`, `--trim`, `--resize`, `--fit`, `--hard-alpha`, `--no-enlarge`, `--nearest` and `--no-bleed`.
 - **Presets and palettes:** `--style`, `--character` and `--palette`, as well as the project's own views.
 - **Other options:** `--manifest`, `--via-responses` and `--model`.
 - **Subcommands:** `convert`, `sheet`, `batch`, `tile` and `presets`.

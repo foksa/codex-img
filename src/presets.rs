@@ -9,7 +9,7 @@ use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
 pub const PROJECT_FILE: &str = "codex-img.json";
-const GLOBAL_FILE: &str = "presets.json";
+pub const GLOBAL_FILE: &str = "presets.json";
 const BUILT_IN: &str = include_str!("../skills/codex-img/scripts/presets.json");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,11 +142,13 @@ fn read_file(file: &Path) -> Result<Map<String, Value>> {
 }
 
 /// The `views`, `styles` and `characters` of a preset file or spec; other keys are left to the caller.
-fn parse_presets(object: &Map<String, Value>, base: &Path, source: Source, file: Option<&Path>) -> Result<Vec<Preset>> {
+pub(crate) fn parse_presets(object: &Map<String, Value>, base: &Path, source: Source, file: Option<&Path>) -> Result<Vec<Preset>> {
+    crate::check::schema_field(object)?;
     if source != Source::Spec {
-        if let Some(field) = object.keys().find(|k| !Kind::ALL.iter().any(|kind| kind.key() == k.as_str())) {
-            return Err(Error::usage(format!("unknown field \"{field}\"; a preset file has views, styles, characters and palettes.")));
+        if let Some(field) = object.keys().find(|k| !file_field(k)) {
+            return Err(Error::usage(format!("unknown field \"{field}\"; a preset file has views, styles, characters, palettes and events.")));
         }
+        crate::check::events_field(object)?;
     }
     let mut presets = Vec::new();
     for kind in Kind::ALL {
@@ -214,6 +216,17 @@ fn check_name(name: &str) -> Result<()> {
         return Err(Error::usage("a preset name is letters, digits, - and _ (at most 64)."));
     }
     Ok(())
+}
+
+/// A top-level key of `codex-img.json` or the global `presets.json`.
+pub(crate) fn file_field(key: &str) -> bool {
+    ["$schema", "events"].contains(&key) || Kind::ALL.iter().any(|kind| kind.key() == key)
+}
+
+/// A preset file's `events` setting, when it is readable and says. Errors are the loader's to report.
+pub fn events_setting(file: &Path) -> Option<bool> {
+    let text = std::fs::read_to_string(file).ok()?;
+    serde_json::from_str::<Value>(&text).ok()?.get("events")?.as_bool()
 }
 
 /// The nearest `codex-img.json` in `start` or a folder above it.
@@ -585,11 +598,10 @@ fn describe(preset: &Preset, hidden_by: Option<Source>) -> Value {
     if let Some(file) = &preset.file {
         out["file"] = json!(file.display().to_string());
     }
-    if let Some(text) = &preset.text {
-        out["text"] = json!(text);
-    }
-    if !preset.refs.is_empty() {
-        out["refs"] = json!(preset.refs.iter().map(|r| r.display().to_string()).collect::<Vec<_>>());
+    out["text"] = json!(preset.text);
+    out["refs"] = json!(preset.refs.iter().map(|path| std::path::absolute(path).unwrap_or_else(|_| path.clone()).display().to_string()).collect::<Vec<_>>());
+    if preset.kind == Kind::Palette {
+        out["colors"] = json!(crate::palette::parse_list(preset.text.as_deref().unwrap_or_default()).expect("parsed palette").into_iter().map(crate::palette::hex).collect::<Vec<_>>());
     }
     if let Some(source) = hidden_by {
         out["hiddenBy"] = json!(source.name());
@@ -740,6 +752,17 @@ mod tests {
     }
 
     #[test]
+    fn json_listing_includes_text_absolute_refs_and_palette_colors() {
+        let library = Library::builtin();
+        let view = describe(library.get(Kind::View, "side").unwrap(), None);
+        assert!(view["text"].as_str().is_some());
+        assert_eq!(view["refs"], json!([]));
+        let palette = describe(library.get(Kind::Palette, "game-boy").unwrap(), None);
+        assert_eq!(palette["colors"].as_array().unwrap().len(), 4);
+        assert_eq!(palette["colors"][0], "#0F380F");
+    }
+
+    #[test]
     fn layers_resolve_in_order_and_report_what_they_hide() {
         let dir = temp_dir("presets-layers");
         let (project, global) = (dir.join("game/codex-img.json"), dir.join("config/presets.json"));
@@ -767,6 +790,13 @@ mod tests {
         assert!(Library::load(None, Some(&project), None).unwrap_err().message.contains("unknown field \"view\""));
         write(&project, json!({"styles": {"bad name": "x"}}));
         assert!(Library::load(None, Some(&project), None).unwrap_err().message.contains("letters, digits"));
+        write(&project, json!({"events": "no"}));
+        assert!(Library::load(None, Some(&project), None).unwrap_err().message.contains("events must be true or false"));
+        write(&project, json!({"events": false, "styles": {"ink": "Ink"}}));
+        assert!(Library::load(None, Some(&project), None).is_ok());
+        assert_eq!(events_setting(&project), Some(false));
+        write(&project, json!({}));
+        assert_eq!(events_setting(&project), None);
     }
 
     #[test]

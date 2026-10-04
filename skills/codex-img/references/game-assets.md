@@ -120,7 +120,7 @@ For a set of assets, such as a game's art, keep them in a JSON spec and run `cod
 }
 ```
 
-- **What gets generated:** only missing raw images (`raw/<key>.png`), so delete one to re-roll it. Then every raw image is converted, rewriting only files whose bytes change.
+- **What gets generated:** only missing raw images (`raw/<key>.png`), use `batch <spec> --reroll <key>` to replace one while keeping its history. Then every raw image is converted, rewriting only files whose bytes change. An asset whose generation failed in that run is left out of conversion, so its old output stays as it was.
 - **Run `--dry-run` first:** generation uses quota. `--convert-only` needs no login.
 - **Fields:**
   - Generation: `prompt`, `aspect`, `quality`, `background`, `reference` (other keys' raw images, generated first) and `images`.
@@ -128,7 +128,8 @@ For a set of assets, such as a game's art, keep them in a JSON spec and run `cod
   - Conversion: the `convert` options with underscores (`hard_alpha`, `key_region`, …), and `max: [W, H]` for a size limit.
   - `null` or `false` turns a default off.
 - **Two kinds of `style`:** the top-level `style` is plain text appended to every prompt, while an asset's `style` names a preset.
-- **Manifests:** each raw image gets `<key>.png.json`, recording the prompt sent, the presets, the inputs and what the backend reported. When the spec or an input has changed since, the asset's `skip` line says so (`changed: true` with `--json`). Ask the user before deleting the raw image to re-roll it, because that spends quota.
+- **Project history:** runs belong to the project found above the working folder, even when the batch spec or output is elsewhere. Events go to `.codex-img/runs/`; see [projects.md](projects.md).
+- **Manifests:** each raw image gets `<key>.png.json`, recording the prompt sent, the presets, the inputs and what the backend reported. When the spec or an input has changed since, the asset's `skip` line says so (`changed: true` with `--json`). Re-roll only when the user asks, because it spends quota. Use `--dry-run --json` first to show the full plan, including missing dependencies.
 - **Output sizes:** each convert line reports the final size (`-> public/assets/tree.png (420x156, 18 KB)`), so read sizes from there instead of opening every file.
 
 ## Reviewing a set: `sheet`
@@ -140,6 +141,7 @@ codex-img sheet assets/harbor/*.png -o /tmp/harbor-sheet.png
 It lays the images out in one labelled grid; look at that one image instead of opening each file.
 - **What stands out:** sprites stand on a common baseline, so floating sprites, leftover background patches and style drift across a set are easy to spot.
 - **Options:** `--same-scale` keeps relative sizes, `--force` replaces an earlier sheet, and `--bg '#rrggbb'` changes the background (default: muted green).
+- **History:** saved sheets emit free run events, like other runs. Set `CODEX_IMG_EVENTS=off` for a temporary preview.
 - **Where to write it:** outside the project (for example `/tmp`), because sheets are for review, not assets.
 
 ## Repeating backgrounds: `tile`
@@ -155,3 +157,43 @@ codex-img tile sky.png -o sky-tile.png --preview /tmp/join.png
 - **If the join comes out wrong,** add `--prompt "what the picture shows"`.
 - **Always look at the `--preview` image,** which shows the join in the middle.
 - **Don't prompt landmarks onto an edge** as a workaround for mirroring.
+
+Inside a project, tile outputs and `--keep-edit` images also get manifests. `--force` may replace images, but existing manifests are preserved and a warning is printed. Use a new output name to keep each image and its record together.
+
+For another version of an existing result, `codex-img rerun <image> -o <new-path>`
+repeats its recorded request and conversion, using one image of quota. Tile reruns use
+the original panorama for the seam repair. The new manifest links to the old result with
+`parent`; ordinary edits with one `-i` infer this link too (`--no-parent` disables it,
+`--parent <image>` sets it). See [projects.md](projects.md) for reference checks and legacy
+manifests. `presets list --json` lists full text, absolute refs, sources and palette hex
+colours without using quota.
+
+### Batch history and edits
+
+`batch <spec> --inspect --json` lists per-asset raw/output state, changed status, comments,
+stars, conversion settings and history. It is offline and free. Re-roll exact keys with
+`batch <spec> --reroll <key>...`; current raws stay active until their replacements succeed.
+Old PNGs and manifests move to `.codex-img/history/<key>/`, in the project or beside an
+unprojected spec. Failures preserve the current version. A concurrent raw/manifest change
+stops activation and keeps the generated image in history for recovery.
+
+`batch <spec> --restore <key> <image>` copies any version into the raw slot (a manifest is optional),
+keeps the source, archives the old raw, converts non-PNG input to PNG, and records the source
+as parent. It spends no quota, then applies current conversion settings.
+
+`refine --batch <spec> --key <key> "<change>"` (or `--from-comment`) costs one image. It uses
+the raw’s recorded generation settings and recorded preset names with their current
+definitions and drift warnings. It replaces the raw through history, then applies current
+batch conversion settings. Re-roll is how to adopt the current spec’s generation settings.
+From-comment edits clear the asset note only after success, preserving changed notes.
+
+The batch conversion flag `nearest: true` copies source pixels when resizing. Use it for whole-number upscaling of pixel art; generated pixel art is not on a true grid, so downscaling it this way gives uneven pixels. Grid detection is deferred.
+
+After reviewing a batch dry-run plan, use `--expect-images N` to stop before quota if the number of generations (including missing dependencies) changed. This guard belongs to the CLI, so the app’s cost remains enforced when the child starts.
+
+Restore leaves source comments/stars on the source; clear or move any current raw manifest
+comment before restoring. `--inspect --json` adds `edited`, with change detection following
+the original generation’s parent chain. Pending files are excluded from history. Batch locks
+are per canonical spec; `--no-wait` fails immediately on contention, and conversion-only
+runs take one spec lock for the conversion phase, allowing parallel workers; a busy spec
+fails once before workers start under `--no-wait`.

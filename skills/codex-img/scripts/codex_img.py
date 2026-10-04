@@ -155,7 +155,8 @@ def aspect_mismatch(aspect, size):
 
 def parse(args):
     # The binary's subcommands: refuse them rather than generate an image from "sheet a.png".
-    if args[:1] and args[0] in ("convert", "sheet", "batch", "tile", "presets"):
+    if args[:1] and args[0] in ("convert", "sheet", "batch", "tile", "presets", "check", "init",
+                                    "refine", "rerun", "comments", "stars"):
         raise Fail(USAGE, f"`{args[0]}` needs the codex-img binary; the Python fallback only generates and edits images. "
                           f"Install the binary, or quote a prompt that starts with \"{args[0]}\".")
     if args[:1] == ["status"] and all(a == "--json" for a in args[1:]):
