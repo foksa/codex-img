@@ -143,7 +143,10 @@ mod tests {
         assert_eq!(manifest["comment"], "Keep"); assert_eq!(manifest["unknown"], 7); assert_eq!(manifest["star"], true);
         assert!(set_manifest(&mut Value::Null, Format::Png, &Encoding::default(), &Transform::default()).is_err());
         let original = r#"{"defaults":{"trim":5,"palette":"pico-8"},"assets":{"hero":{"prompt":"Fox","comment":"Keep","quality":"high","unknown":7}}}"#;
-        let value: Value = serde_json::from_str(&batch_spec(std::path::Path::new("/project/specs/assets.json"), "hero", original, &["--format=png".into(),"--palette=/project/refs/palette.png".into(),"--key=blue".into(),"--key=cyan".into()]).unwrap()).unwrap();
+        // An absolute root on every platform: "/project" has no drive on Windows.
+        let project = std::path::Path::new(if cfg!(windows) { r"C:\project" } else { "/project" });
+        let palette = format!("--palette={}", project.join("refs/palette.png").display());
+        let value: Value = serde_json::from_str(&batch_spec(&project.join("specs/assets.json"), "hero", original, &["--format=png".into(), palette, "--key=blue".into(),"--key=cyan".into()]).unwrap()).unwrap();
         assert_eq!(value["assets"]["hero"]["palette"], "../refs/palette.png");
         assert!(value["assets"]["hero"]["trim"].is_null());
         assert_eq!(value["assets"]["hero"]["key"], json!(["blue","cyan"]));
