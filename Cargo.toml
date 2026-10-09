@@ -2,7 +2,7 @@
 name = "codex-img"
 version = "0.9.1"
 edition = "2021"
-description = "Generate and edit images with your ChatGPT/Codex subscription, calling the Codex image endpoint directly."
+description = "Generate and edit images with your ChatGPT/Codex subscription, and convert, pack and tile them locally."
 license = "Apache-2.0"
 repository = "https://github.com/foksa/codex-img"
 rust-version = "1.88"

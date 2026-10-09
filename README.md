@@ -4,6 +4,8 @@ Generate images from the command line with your ChatGPT/Codex subscription. It n
 
 `codex-img` calls the same image endpoint the Codex CLI uses, `chatgpt.com/backend-api/codex/images/generations`, or `/images/edits` when you pass reference images. That's one JSON request per image, with no chat model in between. It reuses the ChatGPT login that `codex login` saved in `~/.codex/auth.json`.
 
+It's also a local asset pipeline that needs no login and no quota. It can [convert, trim, resize and key out backgrounds](#converting-existing-images) (whole folders at once), snap images to [palettes](#palettes), lay a set out on a [contact sheet](#contact-sheets), pack [texture atlases](#texture-atlases) for PixiJS or Phaser, and build [tile pyramids](#map-tile-pyramids) for big maps. Everything it writes is deterministic: the same inputs give the same bytes. [Asset batches](#asset-batches) join both halves, going from a JSON spec to generated, cleaned and converted files in one pass.
+
 ## Install
 
 **Prebuilt binary:** download the archive for your platform from [Releases](https://github.com/foksa/codex-img/releases). Builds exist for macOS (Apple Silicon and Intel), Linux (x86-64 and ARM64, fully static) and Windows (x86-64, a `.zip`). Unpack it and put `codex-img` on your `PATH`. The archive also contains the agent skill in `skills/codex-img`.
