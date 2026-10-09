@@ -74,12 +74,21 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+        with:
+          path: source
+          sparse-checkout: .github/release-notes
       - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
       - name: Checksums
         run: sha256sum *.tar.gz *.zip | tee SHA256SUMS
+      # The description comes from .github/release-notes/<tag>.md; GitHub's generated notes
+      # (the Full Changelog link) follow it. Without the file the release still goes out.
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes *.tar.gz *.zip SHA256SUMS
+        run: |
+          notes="source/.github/release-notes/$GITHUB_REF_NAME.md"
+          if [ -f "$notes" ]; then set -- --notes-file "$notes"; else echo "::warning::No $notes; the release has generated notes only."; set --; fi
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "codex-img ${GITHUB_REF_NAME#v}" "$@" --generate-notes *.tar.gz *.zip SHA256SUMS
