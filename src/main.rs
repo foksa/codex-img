@@ -18,6 +18,7 @@ mod json_edit;
 mod manifest;
 mod palette;
 mod presets;
+mod pyramid;
 mod project;
 mod registry;
 mod sheet;
@@ -71,6 +72,11 @@ fn run(args: &[String]) -> i32 {
             Ok(0)
         }
         Command::Atlas(options) => atlas::run(&options),
+        Command::PyramidHelp => {
+            println!("{}", pyramid::help());
+            Ok(0)
+        }
+        Command::Pyramid(options) => pyramid::run(&options),
         Command::BatchHelp => {
             println!("{}", batch::help());
             Ok(0)

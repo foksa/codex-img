@@ -456,6 +456,31 @@ Images in a directory are found recursively and named by their path under it, wi
 | `--force` | Replace existing pages; files whose bytes didn't change are left untouched |
 | `--json` | Report `pages` (image, json, size, frames, bytes), `frames`, `inputBytes` and `bytes` |
 
+### Map tile pyramids
+
+`codex-img pyramid` builds zoomed-out levels of a big tiled map, for overview zoom in a game or map viewer. The input is a directory of tiles named `x_y.png` (x the column, y the row), as TripleA's `baseTiles` and `reliefTiles` are. Level 0 is the full map, and each next level is half the size, until a level fits in one tile. Every level is resampled from the full map with premultiplied alpha and cut on the same `x_y` grid. Tiles at the right and bottom edges are cropped to the map size, so padding in the source edge tiles is dropped. It needs no login and no quota, and the same tiles and options always give the same bytes.
+
+```sh
+codex-img pyramid map/baseTiles -o web/base/ --map-size 3500x2000 --lossless
+codex-img pyramid map/reliefTiles -o web/relief/ --map-size 3500x2000 --merge 512 --output-quality 85
+```
+
+The output is `<dir>/<level>/x_y.webp` plus `<dir>/pyramid.json`: `{"mapWidth", "mapHeight", "tileSize", "format", "levels": [{"level", "width", "height", "cols", "rows", "tiles": {"x_y": "0/x_y.webp"}}]}`. A tile with no visible pixel, which is common in relief layers, isn't written or listed. A level's width and height are the map's divided by 2^level, rounded up.
+
+| Option | |
+|---|---|
+| `-o DIR` | Output directory (required) |
+| `--map-size WxH` | The map's size (`map.width` x `map.height` in TripleA's `map.properties`); pixels past it are padding. Default: the tiles' extent |
+| `--tile PX` | Input tile size (default 256) |
+| `--merge PX` | Output tile size, a multiple of `--tile` (512, 1024): fewer, bigger tiles |
+| `--levels N` | At most N levels, level 0 included |
+| `-f FMT` | `webp` (default) or `png` |
+| `--lossless`, `--output-quality`, `-c`, `--dither`, `--no-bleed` | Tile encoding, as in `convert`. Flat-colour maps are much smaller with `--lossless`; painted relief is smaller lossy |
+| `--force` | Replace an existing pyramid; files whose bytes didn't change are left untouched |
+| `--json` | Report per level (`size`, `tiles`, `bytes`, `changed`) and totals |
+
+The whole map is assembled in memory, up to 400 million pixels.
+
 ### Seamless panoramas
 
 `codex-img tile` makes a panorama wrap around, so it can repeat side by side without a mirror, for skies and backdrops in side-scrolling and racing games. Mirroring a tile shows every landmark twice; `tile` joins the image's own right edge to its left edge instead. It uses one image of quota.

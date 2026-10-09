@@ -11,6 +11,7 @@ Sprites, consistent sets, camera angles, characters and palettes. All commands h
 - [Many assets: `batch`](#many-assets-batch)
 - [Reviewing a set: `sheet`](#reviewing-a-set-sheet)
 - [Texture atlases: `atlas`](#texture-atlases-atlas)
+- [Map tile pyramids: `pyramid`](#map-tile-pyramids-pyramid)
 - [Repeating backgrounds: `tile`](#repeating-backgrounds-tile)
 
 ## Presets: check what the project defines
@@ -152,6 +153,14 @@ codex-img atlas assets/units/ -o public/units.webp --prefix units/ --lossless --
 ```
 
 It packs images into pages with TexturePacker "hash" JSON (PixiJS, Phaser). Frame names are paths under the directory without the extension. More pages are added as `units-1.webp`/`units-1.json` when needed, and the first JSON links them through `related_multi_packs`. Output is deterministic. `codex-img atlas --help` lists padding, `--max-size` and `--pot`.
+
+## Map tile pyramids: `pyramid`
+
+```sh
+codex-img pyramid map/baseTiles -o public/base/ --map-size 3500x2000 --lossless
+```
+
+It takes a directory of `x_y.png` tiles and writes zoomed-out levels (1/2, 1/4, … until one tile holds the map) on the same grid, plus `pyramid.json`. Edge tiles are cropped to `--map-size`, `--merge 512` writes bigger tiles, and blank tiles are skipped.
 
 ## Repeating backgrounds: `tile`
 

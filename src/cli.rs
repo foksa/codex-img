@@ -34,6 +34,9 @@ Usage:
   codex-img atlas <input or dir>... -o atlas.webp
                               Pack images into texture atlas pages with TexturePacker
                               JSON (no quota); see `codex-img atlas --help`
+  codex-img pyramid <tile dir> -o <dir>/
+                              Zoomed-out levels of a tiled map, with a manifest (no
+                              quota); see `codex-img pyramid --help`
   codex-img batch <spec.json> [key or folder...]
                               Generate the missing images of a JSON asset spec, then
                               convert them all; see `codex-img batch --help`
@@ -170,6 +173,8 @@ pub enum Command {
     SheetHelp,
     Atlas(crate::atlas::AtlasOptions),
     AtlasHelp,
+    Pyramid(crate::pyramid::PyramidOptions),
+    PyramidHelp,
     Batch(crate::batch::BatchOptions),
     BatchHelp,
     Tile(crate::tile::TileOptions),
@@ -255,6 +260,9 @@ pub fn parse(args: &[String]) -> Result<Command> {
     }
     if args.first().is_some_and(|a| a == "atlas") {
         return Ok(crate::atlas::parse(&args[1..])?.map_or(Command::AtlasHelp, Command::Atlas));
+    }
+    if args.first().is_some_and(|a| a == "pyramid") {
+        return Ok(crate::pyramid::parse(&args[1..])?.map_or(Command::PyramidHelp, Command::Pyramid));
     }
     if args.first().is_some_and(|a| a == "batch") {
         return Ok(crate::batch::parse(&args[1..])?.map_or(Command::BatchHelp, Command::Batch));
