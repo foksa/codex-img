@@ -7,7 +7,7 @@ use crate::util;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const VERSION: &str = env!("CODEX_IMG_VERSION");
 pub const MAX_PROMPT_CHARS: usize = 32_000;
 
 pub fn help() -> String {
