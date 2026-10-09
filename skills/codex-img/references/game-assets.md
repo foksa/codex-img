@@ -10,6 +10,7 @@ Sprites, consistent sets, camera angles, characters and palettes. All commands h
 - [Palettes](#palettes)
 - [Many assets: `batch`](#many-assets-batch)
 - [Reviewing a set: `sheet`](#reviewing-a-set-sheet)
+- [Texture atlases: `atlas`](#texture-atlases-atlas)
 - [Repeating backgrounds: `tile`](#repeating-backgrounds-tile)
 
 ## Presets: check what the project defines
@@ -143,6 +144,14 @@ It lays the images out in one labelled grid; look at that one image instead of o
 - **Options:** `--same-scale` keeps relative sizes, `--force` replaces an earlier sheet, and `--bg '#rrggbb'` changes the background (default: muted green).
 - **History:** saved sheets emit free run events, like other runs. Set `CODEX_IMG_EVENTS=off` for a temporary preview.
 - **Where to write it:** outside the project (for example `/tmp`), because sheets are for review, not assets.
+
+## Texture atlases: `atlas`
+
+```sh
+codex-img atlas assets/units/ -o public/units.webp --prefix units/ --lossless --trim --extrude 1
+```
+
+It packs images into pages with TexturePacker "hash" JSON (PixiJS, Phaser). Frame names are paths under the directory without the extension. More pages are added as `units-1.webp`/`units-1.json` when needed, and the first JSON links them through `related_multi_packs`. Output is deterministic. `codex-img atlas --help` lists padding, `--max-size` and `--pot`.
 
 ## Repeating backgrounds: `tile`
 

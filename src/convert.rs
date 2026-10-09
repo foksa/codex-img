@@ -316,7 +316,7 @@ fn plan(opts: &ConvertOptions) -> Result<Vec<Planned>> {
 
 /// Images under `dir`, in sorted path order so runs and reports are reproducible. Hidden entries
 /// and symlinked directories are skipped.
-fn walk(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+pub(crate) fn walk(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
     let fail = |e: std::io::Error| Error::other(format!("Unable to read {}: {e}", dir.display()));
     let mut entries: Vec<PathBuf> = std::fs::read_dir(dir).map_err(fail)?.map(|e| e.map(|e| e.path())).collect::<std::io::Result<_>>().map_err(fail)?;
     entries.sort();

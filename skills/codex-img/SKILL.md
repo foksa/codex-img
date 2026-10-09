@@ -12,7 +12,7 @@ description: Generate or edit raster images (PNG/JPEG/WebP) with the `codex-img`
 | Task | Read |
 |---|---|
 | Writing or refining any prompt; use-case recipes (icons, products, UI, slides, edits) | [references/prompting.md](references/prompting.md) |
-| Game sprites, a set of assets, camera angles, characters, palettes, `batch`, `sheet`, `tile` | [references/game-assets.md](references/game-assets.md) |
+| Game sprites, a set of assets, camera angles, characters, palettes, `batch`, `sheet`, `atlas`, `tile` | [references/game-assets.md](references/game-assets.md) |
 | Project history, manifests, rerun, refine, comments and stars | [references/projects.md](references/projects.md) |
 | Changing format, size or file weight of existing images, removing a painted-in background | [references/convert.md](references/convert.md) |
 | `codex-img` is not installed (`command -v codex-img` finds nothing) | [references/fallback.md](references/fallback.md) |
@@ -66,7 +66,7 @@ multi-line prompt here, with "quotes" and $symbols
 EOF
 ```
 
-A prompt whose first word is `convert`, `sheet`, `batch`, `tile`, `rerun`, `refine`, `comments`, `stars`, `check` or `presets` runs that subcommand instead, so start the prompt with another word.
+A prompt whose first word is `convert`, `sheet`, `atlas`, `batch`, `tile`, `rerun`, `refine`, `comments`, `stars`, `check` or `presets` runs that subcommand instead, so start the prompt with another word.
 
 Batch `--inspect --json` includes `edited`: refined raws compare the spec against their
 original generation, and missing parent manifests give `changed: false, edited: true`.

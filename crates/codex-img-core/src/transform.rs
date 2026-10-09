@@ -567,7 +567,7 @@ impl Transform {
 /// Formats that store the colour of fully transparent pixels as it is. Lossy WebP already
 /// replaces it (libwebp's default), JPEG has no alpha, and in a palette PNG bled colours would
 /// take palette entries from the visible ones.
-fn bleeds(format: Format, enc: &Encoding) -> bool {
+pub fn bleeds(format: Format, enc: &Encoding) -> bool {
     match format {
         Format::Png => enc.colors.is_none(),
         Format::Webp => enc.lossless,
@@ -908,7 +908,7 @@ pub fn resample(rgba: &RgbaImage, width: u32, height: u32) -> RgbaImage {
 /// filtering that ignores alpha, like a game engine's texture sampling, blends towards the edge
 /// colour instead of whatever the image stored there. Grows outwards one ring of pixels per wave,
 /// each pixel averaging its already-coloured 8-neighbours. Returns whether any pixel changed.
-fn bleed(rgba: &mut RgbaImage) -> bool {
+pub fn bleed(rgba: &mut RgbaImage) -> bool {
     let (w, h) = (rgba.width() as usize, rgba.height() as usize);
     let mut known: Vec<bool> = rgba.pixels().map(|p| p.0[3] > 0).collect();
     if known.iter().all(|&k| k) || !known.iter().any(|&k| k) {

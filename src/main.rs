@@ -4,6 +4,7 @@ mod batch;
 mod cli;
 mod check;
 mod history;
+mod atlas;
 mod convert;
 mod conversion_record;
 mod rerun;
@@ -65,6 +66,11 @@ fn run(args: &[String]) -> i32 {
             Ok(0)
         }
         Command::Sheet(options) => sheet::run(&options),
+        Command::AtlasHelp => {
+            println!("{}", atlas::help());
+            Ok(0)
+        }
+        Command::Atlas(options) => atlas::run(&options),
         Command::BatchHelp => {
             println!("{}", batch::help());
             Ok(0)

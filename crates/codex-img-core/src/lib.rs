@@ -3,6 +3,7 @@ pub mod error;
 pub mod images;
 pub mod transform;
 pub mod palette;
+pub mod atlas;
 pub mod sheet;
 pub mod tile;
 pub mod conversion_record;

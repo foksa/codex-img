@@ -432,6 +432,30 @@ codex-img sheet sprites/*.png -o sheet.png --same-scale --cols 8 --force
 
 An input that can't be read is reported and left out, and the others are still laid out. Labels use a small built-in font that covers ASCII; other characters show as `?`.
 
+### Texture atlases
+
+`codex-img atlas` packs many small images into texture atlas pages for a game engine. Each page gets a JSON file in TexturePacker's "hash" format, which PixiJS, Phaser and most engines load. It needs no login and no quota, and the same inputs and options always give the same bytes, so builds are reproducible.
+
+```sh
+codex-img atlas maps/units/ -o web/units.webp --prefix units/ --lossless --trim --extrude 1
+codex-img atlas flags/ -o web/flags.png --max-size 1024 --pot --force
+```
+
+Images in a directory are found recursively and named by their path under it, without the extension (`Germans/infantry`). A file given directly is named by its file name. When one page isn't enough, the next pages are `units-1.webp` + `units-1.json` and so on. The first JSON lists the others in `meta.related_multi_packs`, so PixiJS's `Assets.load('units.json')` loads every page. Sprites are never rotated, and an unreadable input or a duplicate frame name fails the whole atlas rather than leaving a frame out.
+
+| Option | |
+|---|---|
+| `-o FILE` | First page (required): `.png` or `.webp` |
+| `--prefix TEXT` | Put this in front of every frame name, e.g. `units/`, so frames from different atlases don't collide in a global texture cache |
+| `--trim` | Pack only the pixels with any alpha. `spriteSourceSize` and `sourceSize` keep the original offset and size, so sprites stay aligned |
+| `--padding PX` | Transparent space between sprites and at the page edges, 0–64 (default 2) |
+| `--extrude PX` | Repeat each sprite's edge pixels this far outward, outside its frame, so texture filtering doesn't pick up neighbours, 0–16 (default 0) |
+| `--max-size PX` | Largest page side (default 2048) |
+| `--pot` | Power-of-two page sides; needs a power-of-two `--max-size` |
+| `--lossless`, `--output-quality`, `-c`, `--dither`, `--no-bleed` | Page encoding, as in `convert`. Use `--lossless` for sprites; PNG and lossless WebP pages get edge bleed under transparent pixels |
+| `--force` | Replace existing pages; files whose bytes didn't change are left untouched |
+| `--json` | Report `pages` (image, json, size, frames, bytes), `frames`, `inputBytes` and `bytes` |
+
 ### Seamless panoramas
 
 `codex-img tile` makes a panorama wrap around, so it can repeat side by side without a mirror, for skies and backdrops in side-scrolling and racing games. Mirroring a tile shows every landmark twice; `tile` joins the image's own right edge to its left edge instead. It uses one image of quota.

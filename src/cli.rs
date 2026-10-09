@@ -31,6 +31,9 @@ Usage:
   codex-img sheet <input>... -o sheet.png
                               Lay images out in one labelled grid to review a batch;
                               see `codex-img sheet --help`
+  codex-img atlas <input or dir>... -o atlas.webp
+                              Pack images into texture atlas pages with TexturePacker
+                              JSON (no quota); see `codex-img atlas --help`
   codex-img batch <spec.json> [key or folder...]
                               Generate the missing images of a JSON asset spec, then
                               convert them all; see `codex-img batch --help`
@@ -165,6 +168,8 @@ pub enum Command {
     ConvertHelp,
     Sheet(crate::sheet::SheetOptions),
     SheetHelp,
+    Atlas(crate::atlas::AtlasOptions),
+    AtlasHelp,
     Batch(crate::batch::BatchOptions),
     BatchHelp,
     Tile(crate::tile::TileOptions),
@@ -247,6 +252,9 @@ pub fn parse(args: &[String]) -> Result<Command> {
     }
     if args.first().is_some_and(|a| a == "sheet") {
         return Ok(crate::sheet::parse(&args[1..])?.map_or(Command::SheetHelp, Command::Sheet));
+    }
+    if args.first().is_some_and(|a| a == "atlas") {
+        return Ok(crate::atlas::parse(&args[1..])?.map_or(Command::AtlasHelp, Command::Atlas));
     }
     if args.first().is_some_and(|a| a == "batch") {
         return Ok(crate::batch::parse(&args[1..])?.map_or(Command::BatchHelp, Command::Batch));

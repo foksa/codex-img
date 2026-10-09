@@ -13,7 +13,7 @@ python3 <skill-dir>/scripts/codex_img.py "<prompt>" -o <path>.png --json
 - **Processing:** `-c`, `--dither`, `--output-quality`, `--lossless`, `--trim`, `--resize`, `--fit`, `--hard-alpha`, `--no-enlarge`, `--nearest` and `--no-bleed`.
 - **Presets and palettes:** `--style`, `--character` and `--palette`, as well as the project's own views.
 - **Other options:** `--manifest`, `--via-responses` and `--model`.
-- **Subcommands:** `convert`, `sheet`, `batch`, `tile` and `presets`.
+- **Subcommands:** `convert`, `sheet`, `atlas`, `batch`, `tile` and `presets`.
 
 If the user wants JPEG or WebP, exact pixel dimensions, trimming or a palette, generate a PNG and then process it yourself with `sips`, ImageMagick or Pillow. Say that you did. For exact dimensions on macOS: `sips -z H W in.png --out out.png`.
 

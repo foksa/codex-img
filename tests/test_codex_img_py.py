@@ -149,7 +149,7 @@ class Test(unittest.TestCase):
         self.assertEqual(len(Server.requests), 1)
 
     def test_unsupported_options_fail_before_any_request(self):
-        for args in (["convert", "a.png", "-o", "a.webp"], ["sheet", "a.png", "-o", "s.png"], ["batch", "art.json"], ["tile", "sky.png", "-o", "t.png"], ["presets"], ["presets", "show", "view", "side"], ["x", "-f", "jpeg"], ["x", "-c", "64"], ["x", "--output-quality", "80"], ["x", "--via-responses"], ["x", "--trim=4"], ["x", "--resize", "400x"], ["x", "-o", "a.jpg"], ["x", "-s", "big"], []):
+        for args in (["convert", "a.png", "-o", "a.webp"], ["sheet", "a.png", "-o", "s.png"], ["atlas", "u/", "-o", "u.webp"], ["batch", "art.json"], ["tile", "sky.png", "-o", "t.png"], ["presets"], ["presets", "show", "view", "side"], ["x", "-f", "jpeg"], ["x", "-c", "64"], ["x", "--output-quality", "80"], ["x", "--via-responses"], ["x", "--trim=4"], ["x", "--resize", "400x"], ["x", "-o", "a.jpg"], ["x", "-s", "big"], []):
             self.assertEqual(self.run_cli(*args)[0], 64, args)
         self.assertEqual(Server.requests, [])
 
