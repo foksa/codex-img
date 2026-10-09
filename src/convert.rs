@@ -22,6 +22,8 @@ pub struct ConvertOptions {
     /// Replace existing output files (never the input).
     pub force: bool,
     pub mask_out: Option<String>,
+    /// Directory inputs are walked, and their images mirror the tree under -o.
+    pub recursive: bool,
 }
 
 pub fn help() -> &'static str {
@@ -29,6 +31,7 @@ pub fn help() -> &'static str {
   codex-img convert <input>... [options]
 
 Converts existing PNG, JPEG or WebP files locally (no login, no quota).
+With --recursive, inputs can be directories.
 
 Options:
   -o, --output <path>       Output file (one input) or directory. Default: next to
@@ -114,6 +117,10 @@ Options:
                             that already holds the same bytes is left untouched
       --mask-out <png>      Write a black/white mask of pixels removed by --key,
                             at the input size (white is removed). One input only
+  -r, --recursive           Convert every PNG, JPEG and WebP under each directory
+                            input (hidden files and other files are skipped),
+                            keeping its relative path under -o. With --json, a
+                            last line {"total":{...}} sums files and bytes
       --json                Print one JSON object per file to stdout
       --quiet               No progress on stderr
 
@@ -128,12 +135,13 @@ Examples:
   codex-img convert car.png --hard-alpha --trim --resize 400x300 --no-enlarge -c 160
   codex-img convert cockpit.png --resize 1920x1080 --fit cover
   codex-img convert raw/*.png --trim -c 160 -o public/ --force
+  codex-img convert -r maps/units/ -f webp --lossless -o web/units/ --json
   codex-img convert boat.png --hard-alpha --key auto --key-region bottom:30% --key-cut --trim --trim-density 0.15
   codex-img convert house.png --key auto --key-region top:80% --key-spread 24 --trim"#
 }
 
 pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
-    let mut opts = ConvertOptions { inputs: Vec::new(), output: None, format: None, encoding: images::Encoding::default(), transform: Transform::default(), json: false, quiet: false, force: false, mask_out: None };
+    let mut opts = ConvertOptions { inputs: Vec::new(), output: None, format: None, encoding: images::Encoding::default(), transform: Transform::default(), json: false, quiet: false, force: false, mask_out: None, recursive: false };
     let (mut palette, mut palette_clean) = (None, false);
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -179,6 +187,7 @@ pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
             "--json" => opts.json = true,
             "--quiet" => opts.quiet = true,
             "--force" => opts.force = true,
+            "-r" | "--recursive" => opts.recursive = true,
             "--mask-out" => opts.mask_out = Some(value()?),
             "-h" | "--help" => return Ok(None),
             _ => return Err(Error::usage(format!("Unknown convert option: {arg}"))),
@@ -196,6 +205,9 @@ pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
     let output_is_file = opts.output.as_deref().is_some_and(|o| !o.ends_with('/') && !Path::new(o).is_dir());
     if output_is_file && opts.inputs.len() > 1 {
         return Err(Error::usage("With several inputs, -o must be a directory (end it with /)."));
+    }
+    if opts.recursive && (output_is_file || opts.mask_out.is_some()) {
+        return Err(Error::usage("--recursive needs -o to be a directory (end it with /), and can't use --mask-out."));
     }
     if opts.format.is_none() && output_is_file {
         let ext = Path::new(opts.output.as_deref().unwrap_or_default()).extension().and_then(|e| e.to_str()).unwrap_or_default();
@@ -256,14 +268,82 @@ pub fn read_image(path: &Path) -> Result<(Vec<u8>, Format)> {
     Ok((bytes, format))
 }
 
-fn convert_one(input: &Path, opts: &ConvertOptions) -> Result<serde_json::Value> {
+/// One file to convert, and the directory its output goes to when --recursive mirrors a tree.
+#[derive(Debug)]
+struct Planned {
+    input: PathBuf,
+    output: Option<String>,
+}
+
+/// The inputs as files. With --recursive a directory becomes its images, sorted by path, each
+/// going to the same relative place under -o (or next to itself without -o). Fails before any
+/// conversion if two inputs would write the same output file.
+fn plan(opts: &ConvertOptions) -> Result<Vec<Planned>> {
+    let mut planned = Vec::new();
+    for input in &opts.inputs {
+        let root = Path::new(input);
+        if !opts.recursive || !root.is_dir() {
+            planned.push(Planned { input: root.to_path_buf(), output: opts.output.clone() });
+            continue;
+        }
+        let mut files = Vec::new();
+        walk(root, &mut files)?;
+        if files.is_empty() {
+            return Err(Error::usage(format!("{input} has no PNG, JPEG or WebP files.")));
+        }
+        for file in files {
+            let output = opts.output.as_deref().map(|o| {
+                let relative = file.parent().and_then(|p| p.strip_prefix(root).ok()).unwrap_or(Path::new(""));
+                let dir = if relative.as_os_str().is_empty() { o.to_string() } else { Path::new(o).join(relative).display().to_string() };
+                if dir.ends_with(['/', '\\']) { dir } else { format!("{dir}/") }
+            });
+            planned.push(Planned { input: file, output });
+        }
+    }
+    if opts.recursive {
+        let mut seen = std::collections::HashMap::new();
+        for item in &planned {
+            let format = opts.format.or_else(|| item.input.extension().and_then(|e| Format::parse(&e.to_string_lossy())));
+            let Some(format) = format else { continue };
+            let target = target_path(&item.input, item.output.as_deref(), format);
+            if let Some(other) = seen.insert(target.clone(), item.input.clone()) {
+                return Err(Error::usage(format!("{} and {} would both write {}.", other.display(), item.input.display(), target.display())));
+            }
+        }
+    }
+    Ok(planned)
+}
+
+/// Images under `dir`, in sorted path order so runs and reports are reproducible. Hidden entries
+/// and symlinked directories are skipped.
+fn walk(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    let fail = |e: std::io::Error| Error::other(format!("Unable to read {}: {e}", dir.display()));
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir).map_err(fail)?.map(|e| e.map(|e| e.path())).collect::<std::io::Result<_>>().map_err(fail)?;
+    entries.sort();
+    for path in entries {
+        if path.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')) {
+            continue;
+        }
+        let is_link = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink());
+        if path.is_dir() {
+            if !is_link {
+                walk(&path, files)?;
+            }
+        } else if path.extension().is_some_and(|e| Format::parse(&e.to_string_lossy()).is_some()) {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn convert_one(input: &Path, output: Option<&str>, opts: &ConvertOptions) -> Result<serde_json::Value> {
     let started = Instant::now();
     let (bytes, actual) = read_image(input)?;
     let format = opts.format.unwrap_or(actual);
     // parse() can only check -f/-o; without them the output takes the input's format.
     opts.encoding.check(Some(format)).map_err(|e| Error::usage(format!("{}: {}", input.display(), e.message)))?;
     opts.transform.check_output(Some(format), &opts.encoding).map_err(|e| Error::usage(format!("{}: {}", input.display(), e.message)))?;
-    let target = target_path(input, opts.output.as_deref(), format);
+    let target = target_path(input, output, format);
     if same_file(&target, input) {
         return Err(Error::usage(format!("Output would overwrite the input {}; choose another -o.", input.display())));
     }
@@ -317,32 +397,51 @@ fn convert_one(input: &Path, opts: &ConvertOptions) -> Result<serde_json::Value>
 
 /// Converts each input in turn; a failure is reported and the rest still run. Returns the exit code.
 pub fn run(opts: &ConvertOptions) -> i32 {
+    let planned = match plan(opts) {
+        Ok(planned) => planned,
+        Err(error) => {
+            eprintln!("codex-img: {error}");
+            return error.kind.exit_code();
+        }
+    };
     let mut exit_code = 0;
-    let run = crate::events::Run::start("convert", opts.inputs.len(), json!({}));
-    for input in &opts.inputs {
-        let job = run.job(json!({"prompt":"Local conversion","parent":crate::events::absolute(Path::new(input)),"inputs":[{"path":crate::events::absolute(Path::new(input)),"role":"input"}],"request":{}}));
-        match convert_one(Path::new(input), opts) {
+    let (mut done, mut failed, mut input_bytes, mut output_bytes) = (0u64, 0u64, 0u64, 0u64);
+    let run = crate::events::Run::start("convert", planned.len(), json!({}));
+    for Planned { input, output } in &planned {
+        let input = input.as_path();
+        let job = run.job(json!({"prompt":"Local conversion","parent":crate::events::absolute(input),"inputs":[{"path":crate::events::absolute(input),"role":"input"}],"request":{}}));
+        match convert_one(input, output.as_deref(), opts) {
             Ok(info) => {
-                job.done(json!({"path":crate::events::absolute(Path::new(info["path"].as_str().unwrap())),"rawPath":crate::events::absolute(Path::new(input)),"durationMs":info["durationMs"],"size":info["size"]}));
+                job.done(json!({"path":crate::events::absolute(Path::new(info["path"].as_str().unwrap())),"rawPath":crate::events::absolute(input),"durationMs":info["durationMs"],"size":info["size"]}));
+                let (from, to) = (info["inputBytes"].as_u64().unwrap_or(0), info["bytes"].as_u64().unwrap_or(0));
+                (done, input_bytes, output_bytes) = (done + 1, input_bytes + from, output_bytes + to);
                 if opts.json {
                     println!("{info}");
                 } else {
                     println!("{}", info["path"].as_str().unwrap_or_default());
                 }
                 if !opts.quiet {
-                    let (from, to) = (info["inputBytes"].as_u64().unwrap_or(0), info["bytes"].as_u64().unwrap_or(0));
                     let note = if info["unchanged"] == true { ", unchanged" } else { "" };
-                    eprintln!("{input} -> {} ({} KB -> {} KB{note})", info["path"].as_str().unwrap_or_default(), from / 1024, to / 1024);
+                    eprintln!("{} -> {} ({} KB -> {} KB{note})", input.display(), info["path"].as_str().unwrap_or_default(), from / 1024, to / 1024);
                 }
             }
             Err(error) => {
                 job.failed(&error);
                 eprintln!("codex-img: {error}");
+                failed += 1;
                 exit_code = exit_code.max(error.kind.exit_code());
             }
         }
     }
     run.end(None);
+    if opts.recursive {
+        if opts.json {
+            println!("{}", json!({"total": {"files": done, "failed": failed, "inputBytes": input_bytes, "bytes": output_bytes}}));
+        }
+        if !opts.quiet {
+            eprintln!("{done} converted, {failed} failed ({} KB -> {} KB)", input_bytes / 1024, output_bytes / 1024);
+        }
+    }
     exit_code
 }
 
@@ -364,7 +463,7 @@ mod tests {
         pixels.put_pixel(2, 1, image::Rgba([255, 0, 0, 10]));
         pixels.save(&input).unwrap();
         let options = parse(&[input.display().to_string(), "-o".into(), output.display().to_string(), "--key=blue".into(), "--hard-alpha".into(), "--trim".into(), "--resize=2x2".into(), "--mask-out".into(), mask.display().to_string()]).unwrap().unwrap();
-        let info = convert_one(&input, &options).unwrap();
+        let info = convert_one(&input, options.output.as_deref(), &options).unwrap();
         assert_eq!(info["keyedOutPixels"], 10); assert_eq!(info["hardAlphaPixels"], 1); assert!(info["trim"].is_object());
         let removed = image::open(&mask).unwrap().to_luma8(); assert_eq!(removed.dimensions(), (4, 3));
         assert_eq!(removed.get_pixel(0, 0)[0], 255); assert_eq!(removed.get_pixel(1, 1)[0], 0); assert_eq!(removed.get_pixel(2, 1)[0], 0);
@@ -465,12 +564,12 @@ mod tests {
         let min = dir.join("in.min.png");
         std::fs::write(&min, b"stale").unwrap();
         let forced = parse(&args(&[&input_str, "-c", "4", "--quiet", "--force"])).unwrap().unwrap();
-        let info = convert_one(&input, &forced).unwrap();
+        let info = convert_one(&input, forced.output.as_deref(), &forced).unwrap();
         assert!(info.get("unchanged").is_none());
         let written = std::fs::read(&min).unwrap();
         assert_eq!(images::sniff(&written), Some(Format::Png));
         let modified = std::fs::metadata(&min).unwrap().modified().unwrap();
-        assert_eq!(convert_one(&input, &forced).unwrap()["unchanged"], true);
+        assert_eq!(convert_one(&input, forced.output.as_deref(), &forced).unwrap()["unchanged"], true);
         assert_eq!(std::fs::metadata(&min).unwrap().modified().unwrap(), modified, "same bytes: not rewritten");
         assert_eq!(std::fs::read_dir(&dir).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().ends_with(".tmp")).count(), 0);
 
@@ -483,5 +582,27 @@ mod tests {
         let text = dir.join("notes.txt");
         std::fs::write(&text, "hi").unwrap();
         assert_eq!(run(&parse(&args(&[&text.display().to_string(), "--quiet"])).unwrap().unwrap()), 1);
+    }
+
+    #[test]
+    fn recursive_mirrors_the_tree_in_sorted_order_and_refuses_collisions() {
+        let dir = crate::auth::tests::temp_dir("convert-recursive");
+        let source = dir.join("units");
+        for name in ["Germans/infantry.png", "Germans/tank.png", "Russians/infantry.png", "flag.png", ".hidden/x.png"] {
+            std::fs::create_dir_all(source.join(name).parent().unwrap()).unwrap();
+            image::RgbaImage::from_pixel(2, 2, image::Rgba([200, 0, 0, 255])).save(source.join(name)).unwrap();
+        }
+        std::fs::write(source.join("map.properties"), "x").unwrap();
+        let out = dir.join("web");
+        let options = parse(&args(&["-r", &source.display().to_string(), "-f", "webp", "-o", &format!("{}/", out.display())])).unwrap().unwrap();
+        let planned: Vec<_> = plan(&options).unwrap().into_iter().map(|p| p.input.strip_prefix(&source).unwrap().display().to_string()).collect();
+        assert_eq!(planned, ["Germans/infantry.png", "Germans/tank.png", "Russians/infantry.png", "flag.png"].map(|p| p.replace('/', std::path::MAIN_SEPARATOR_STR)));
+        assert_eq!(run(&ConvertOptions { quiet: true, ..options.clone() }), 0);
+        for name in ["Germans/infantry.webp", "Germans/tank.webp", "Russians/infantry.webp", "flag.webp"] { assert!(out.join(name).is_file(), "{name}"); }
+        assert!(!out.join(".hidden").exists());
+
+        image::RgbImage::new(2, 2).save(source.join("flag.jpg")).unwrap();
+        assert!(plan(&options).unwrap_err().message.contains("would both write"));
+        assert!(usage_error(&["-r", "a", "-o", "b.png"]).contains("--recursive"));
     }
 }

@@ -367,6 +367,12 @@ codex-img convert car.png --trim=4 --resize 400x -o sprites/    # crop to conten
 codex-img convert cockpit.png --resize 1920x1080 --fit cover    # exactly 1920x1080, centre crop
 ```
 
+With `-r`/`--recursive`, an input can be a directory. Every PNG, JPEG and WebP under it is converted in sorted path order and goes to the same relative path under `-o` (or next to itself without `-o`). Hidden files, symlinked directories and other files are skipped. If two inputs would write the same output (`a.png` and `a.jpg` with `-f webp`), the run stops before converting anything. With `--json`, a last line `{"total":{"files","failed","inputBytes","bytes"}}` follows the per-file lines, which already have `inputBytes` and `bytes`.
+
+```sh
+codex-img convert -r maps/units/ -f webp --lossless -o web/units/ --json
+```
+
 Without `-o`, output goes next to the input as `<name>.<ext>`, or `<name>.min.<ext>` when that would be the input itself. It takes `-o`, `-f`, `-c`, `--dither`, `--output-quality`, `--lossless`, `--json` and `--quiet`, with the same meaning as above, plus:
 
 | Option | |
