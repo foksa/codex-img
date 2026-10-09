@@ -10,7 +10,7 @@ fn git(args: &[&str]) -> Option<String> {
 
 fn main() {
     let version = env!("CARGO_PKG_VERSION");
-    for path in [".git/HEAD", ".git/index", ".git/refs/tags", ".git/packed-refs"] {
+    for path in [".git/HEAD", ".git/index", ".git/refs/heads", ".git/refs/tags", ".git/packed-refs"] {
         println!("cargo:rerun-if-changed={path}");
     }
     let dirty = git(&["status", "--porcelain", "--untracked-files=no"]).is_some_and(|s| !s.is_empty());
