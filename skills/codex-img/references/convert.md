@@ -56,6 +56,7 @@ Remove it with `--key auto` and a `--key-region` whose edges really are backgrou
 ## Files and edges
 
 - **Several inputs:** `-o` must be a directory ending in `/`.
+- **GIF input:** read like the others (the first frame; truly animated GIFs are refused) and written as PNG unless `-f` says otherwise.
 - **Directory trees:** `-r` converts every image under a directory input and mirrors its relative paths under `-o`. With `--json`, the last line is `{"total":{...}}`.
 - **Overwriting:** `convert` never overwrites the input, and overwrites other existing files only with `--force`.
   - The same input and options always give the same bytes.

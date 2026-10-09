@@ -57,6 +57,27 @@ pub fn sniff(bytes: &[u8]) -> Option<Format> {
     }
 }
 
+pub fn is_gif(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")
+}
+
+/// A GIF input as PNG bytes, so the rest of the pipeline only sees formats it can also write.
+/// Transparency becomes alpha. Animated GIFs are refused like other animations, unless every
+/// frame after the first is identical to it (old map flags often repeat one frame).
+pub fn gif_to_png(bytes: &[u8]) -> Result<Vec<u8>> {
+    use image::AnimationDecoder;
+    let failed = |e: image::ImageError| Error::other(format!("Input GIF is damaged or unsupported: {e}"));
+    let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).map_err(failed)?;
+    let mut frames = decoder.into_frames();
+    let first = frames.next().ok_or_else(|| Error::other("Input GIF has no frames."))?.map_err(failed)?.into_buffer();
+    for frame in frames {
+        if frame.map_err(failed)?.into_buffer() != first {
+            return Err(Error::other("Input is an animated GIF; codex-img converts still images only and would keep just the first frame."));
+        }
+    }
+    encode_png(&first).map_err(|e| Error::other(format!("Could not convert GIF to PNG: {e}")))
+}
+
 /// How to encode local output. Kept in one place so every entry point validates it the same way.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Encoding {
@@ -333,6 +354,30 @@ fn quantize_png(rgba: &image::RgbaImage, colors: u16, dither: bool) -> std::resu
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    fn gif(frames: &[image::RgbaImage]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+            for frame in frames {
+                encoder.encode_frame(image::Frame::new(frame.clone())).unwrap();
+            }
+        }
+        bytes
+    }
+
+    #[test]
+    fn reads_still_gifs_with_transparency_and_refuses_real_animation() {
+        let mut flag = image::RgbaImage::new(3, 2);
+        flag.put_pixel(1, 1, image::Rgba([200, 0, 0, 255]));
+        let still = gif(&[flag.clone()]);
+        assert!(is_gif(&still) && sniff(&still).is_none());
+        assert_eq!(decode(&gif_to_png(&still).unwrap()).unwrap(), flag);
+        // Old map flags repeat one frame; that is still a still image.
+        assert_eq!(decode(&gif_to_png(&gif(&[flag.clone(), flag.clone()])).unwrap()).unwrap(), flag);
+        let other = image::RgbaImage::from_pixel(3, 2, image::Rgba([0, 0, 200, 255]));
+        assert!(gif_to_png(&gif(&[flag, other])).unwrap_err().message.contains("animated GIF"));
+    }
 
     // 1x1 fully transparent PNG
     pub const PNG: &[u8] = &[137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4, 0, 0, 0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 100, 96, 0, 0, 0, 6, 0, 2, 48, 129, 208, 47, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130];

@@ -142,7 +142,10 @@ pub fn parse(args: &[String]) -> Result<Option<PyramidOptions>> {
 
 /// `x_y.<png|jpg|jpeg|webp>` → (x, y).
 fn tile_coords(path: &Path) -> Option<(u32, u32)> {
-    Format::parse(&path.extension()?.to_string_lossy())?;
+    let ext = path.extension()?.to_string_lossy();
+    if Format::parse(&ext).is_none() && !ext.eq_ignore_ascii_case("gif") {
+        return None;
+    }
     let stem = path.file_stem()?.to_str()?;
     let (x, y) = stem.split_once('_')?;
     let digits = |s: &str| (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())).then(|| s.parse::<u32>().ok()).flatten();
@@ -180,7 +183,7 @@ fn assemble(opts: &PyramidOptions) -> Result<(RgbaImage, usize, u64)> {
             continue;
         }
         let (bytes, _) = convert::read_image(path)?;
-        input_bytes += bytes.len() as u64;
+        input_bytes += std::fs::metadata(path).map_or(bytes.len() as u64, |m| m.len());
         let tile = images::decode(&bytes).map_err(|e| Error::other(format!("{}: {}", path.display(), e.message)))?;
         if tile.width() > t || tile.height() > t {
             return Err(Error::usage(format!("{} is {}x{}, bigger than --tile {t}.", path.display(), tile.width(), tile.height())));

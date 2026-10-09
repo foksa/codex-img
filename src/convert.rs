@@ -30,7 +30,8 @@ pub fn help() -> &'static str {
     r#"Usage:
   codex-img convert <input>... [options]
 
-Converts existing PNG, JPEG or WebP files locally (no login, no quota).
+Converts existing PNG, JPEG, WebP or GIF files locally (no login, no quota).
+GIF is read only; without -f or -o it becomes PNG.
 With --recursive, inputs can be directories.
 
 Options:
@@ -117,8 +118,9 @@ Options:
                             that already holds the same bytes is left untouched
       --mask-out <png>      Write a black/white mask of pixels removed by --key,
                             at the input size (white is removed). One input only
-  -r, --recursive           Convert every PNG, JPEG and WebP under each directory
-                            input (hidden files and other files are skipped),
+  -r, --recursive           Convert every PNG, JPEG, WebP and GIF under each
+                            directory input (hidden and non-image files are
+                            skipped; images in other formats fail),
                             keeping its relative path under -o. With --json, a
                             last line {"total":{...}} sums files and bytes
       --json                Print one JSON object per file to stdout
@@ -264,7 +266,12 @@ pub fn read_image(path: &Path) -> Result<(Vec<u8>, Format)> {
         return Err(fail("larger than 100 MiB".into()));
     }
     let bytes = std::fs::read(path).map_err(|e| fail(e.to_string()))?;
-    let format = images::sniff(&bytes).ok_or_else(|| fail("not a PNG, JPEG or WebP image".into()))?;
+    // GIF is read only: its first (and only) frame goes on as PNG.
+    if images::is_gif(&bytes) {
+        let png = images::gif_to_png(&bytes).map_err(|e| fail(e.message))?;
+        return Ok((png, Format::Png));
+    }
+    let format = images::sniff(&bytes).ok_or_else(|| fail("not a PNG, JPEG, WebP or GIF image".into()))?;
     Ok((bytes, format))
 }
 
@@ -286,10 +293,13 @@ fn plan(opts: &ConvertOptions) -> Result<Vec<Planned>> {
             planned.push(Planned { input: root.to_path_buf(), output: opts.output.clone() });
             continue;
         }
-        let mut files = Vec::new();
-        walk(root, &mut files)?;
+        let (mut files, mut others) = (Vec::new(), Vec::new());
+        walk(root, &mut files, &mut others)?;
+        // Images in a format codex-img can't read fail on their own line instead of vanishing.
+        files.extend(others.into_iter().filter(|p| unreadable_image(p)));
+        files.sort();
         if files.is_empty() {
-            return Err(Error::usage(format!("{input} has no PNG, JPEG or WebP files.")));
+            return Err(Error::usage(format!("{input} has no PNG, JPEG, WebP or GIF files.")));
         }
         for file in files {
             let output = opts.output.as_deref().map(|o| {
@@ -303,7 +313,8 @@ fn plan(opts: &ConvertOptions) -> Result<Vec<Planned>> {
     if opts.recursive {
         let mut seen = std::collections::HashMap::new();
         for item in &planned {
-            let format = opts.format.or_else(|| item.input.extension().and_then(|e| Format::parse(&e.to_string_lossy())));
+            let ext = item.input.extension().map(|e| e.to_string_lossy().to_ascii_lowercase());
+            let format = opts.format.or_else(|| if ext.as_deref() == Some("gif") { Some(Format::Png) } else { ext.as_deref().and_then(Format::parse) });
             let Some(format) = format else { continue };
             let target = target_path(&item.input, item.output.as_deref(), format);
             if let Some(other) = seen.insert(target.clone(), item.input.clone()) {
@@ -314,9 +325,22 @@ fn plan(opts: &ConvertOptions) -> Result<Vec<Planned>> {
     Ok(planned)
 }
 
-/// Images under `dir`, in sorted path order so runs and reports are reproducible. Hidden entries
-/// and symlinked directories are skipped.
-pub(crate) fn walk(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+/// Extensions of images codex-img can't read; a directory walk reports them instead of skipping.
+const UNREADABLE_IMAGES: &[&str] = &["bmp", "tif", "tiff", "tga", "ico", "avif", "heic", "heif", "jxl", "jp2", "svg", "psd"];
+
+/// Whether `path` names an image codex-img reads (PNG, JPEG, WebP or GIF), by extension.
+fn readable_image(path: &Path) -> bool {
+    path.extension().is_some_and(|e| Format::parse(&e.to_string_lossy()).is_some() || e.eq_ignore_ascii_case("gif"))
+}
+
+/// Whether `path` is an image by extension that codex-img can't read.
+pub(crate) fn unreadable_image(path: &Path) -> bool {
+    path.extension().is_some_and(|e| UNREADABLE_IMAGES.iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
+/// Images under `dir`, in sorted path order so runs and reports are reproducible, and in `others`
+/// the files that aren't readable images. Hidden entries and symlinked directories are skipped.
+pub(crate) fn walk(dir: &Path, files: &mut Vec<PathBuf>, others: &mut Vec<PathBuf>) -> Result<()> {
     let fail = |e: std::io::Error| Error::other(format!("Unable to read {}: {e}", dir.display()));
     let mut entries: Vec<PathBuf> = std::fs::read_dir(dir).map_err(fail)?.map(|e| e.map(|e| e.path())).collect::<std::io::Result<_>>().map_err(fail)?;
     entries.sort();
@@ -327,10 +351,12 @@ pub(crate) fn walk(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
         let is_link = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink());
         if path.is_dir() {
             if !is_link {
-                walk(&path, files)?;
+                walk(&path, files, others)?;
             }
-        } else if path.extension().is_some_and(|e| Format::parse(&e.to_string_lossy()).is_some()) {
+        } else if readable_image(&path) {
             files.push(path);
+        } else {
+            others.push(path);
         }
     }
     Ok(())
@@ -363,7 +389,7 @@ fn convert_one(input: &Path, output: Option<&str>, opts: &ConvertOptions) -> Res
         "input": input.display().to_string(),
         "format": format.name(),
         "bytes": written,
-        "inputBytes": bytes.len(),
+        "inputBytes": std::fs::metadata(input).map_or(bytes.len() as u64, |m| m.len()),
         "size": size(converted.size),
         "inputSize": size(converted.input_size),
         "durationMs": started.elapsed().as_millis() as u64,

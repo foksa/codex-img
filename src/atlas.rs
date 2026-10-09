@@ -26,11 +26,12 @@ pub fn help() -> &'static str {
     r#"Usage:
   codex-img atlas <input or dir>... -o <atlas.webp|.png> [options]
 
-Packs PNG, JPEG or WebP images into texture atlas pages, each with a JSON file in
+Packs PNG, JPEG, WebP or GIF images into texture atlas pages, each with a JSON file in
 TexturePacker's "hash" format, which PixiJS, Phaser and most engines load (no login,
 no quota). Images in a directory are found recursively and named by their path
 under it without the extension (Germans/infantry); a file given directly is named
-by its file name without the extension.
+by its file name without the extension. Other files are skipped with a warning,
+but an image in a format codex-img can't read (BMP, TIFF, …) fails the atlas.
 
 Output: atlas.webp + atlas.json, then atlas-1.webp + atlas-1.json and so on when
 one page isn't enough. The first JSON lists the others in meta.related_multi_packs,
@@ -150,10 +151,18 @@ fn collect(opts: &AtlasOptions) -> Result<(Vec<(String, PathBuf)>, u64)> {
     for input in &opts.inputs {
         let root = Path::new(input);
         if root.is_dir() {
-            let mut files = Vec::new();
-            convert::walk(root, &mut files)?;
+            let (mut files, mut others) = (Vec::new(), Vec::new());
+            convert::walk(root, &mut files, &mut others)?;
+            if let Some(image) = others.iter().find(|p| convert::unreadable_image(p)) {
+                return Err(Error::usage(format!("{} is in a format codex-img can't read (PNG, JPEG, WebP and GIF are); convert it or move it out.", image.display())));
+            }
+            if !opts.quiet {
+                for other in &others {
+                    eprintln!("codex-img: skipping {}: not an image", other.display());
+                }
+            }
             if files.is_empty() {
-                return Err(Error::usage(format!("{input} has no PNG, JPEG or WebP files.")));
+                return Err(Error::usage(format!("{input} has no PNG, JPEG, WebP or GIF files.")));
             }
             for file in files {
                 let relative = file.strip_prefix(root).unwrap_or(&file).with_extension("");
@@ -285,6 +294,11 @@ mod tests {
         let frame = first["frames"].as_object().unwrap().values().next().unwrap();
         assert_eq!(frame["spriteSourceSize"], json!({"x": 5, "y": 10, "w": 20, "h": 20}));
         assert_eq!(frame["sourceSize"], json!({"w": 40, "h": 40}));
+
+        // An image codex-img can't read fails the atlas instead of going missing.
+        std::fs::write(source.join("Germans/fighter.bmp"), b"BM").unwrap();
+        assert!(run(&AtlasOptions { force: true, ..opts.clone() }).unwrap_err().message.contains("fighter.bmp"));
+        std::fs::remove_file(source.join("Germans/fighter.bmp")).unwrap();
 
         let before = std::fs::read(&out).unwrap();
         assert!(run(&opts).unwrap_err().message.contains("--force"));

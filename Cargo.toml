@@ -15,7 +15,7 @@ resolver = "2"
 [dependencies]
 codex-img-core = { path = "crates/codex-img-core" }
 base64 = "0.22"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 fs2 = "0.4"
 serde_json = { version = "1", features = ["preserve_order"] }
 ureq = { version = "2", default-features = false, features = ["tls"] }
