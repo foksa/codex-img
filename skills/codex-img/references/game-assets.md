@@ -152,7 +152,7 @@ It lays the images out in one labelled grid; look at that one image instead of o
 codex-img atlas assets/units/ -o public/units.webp --prefix units/ --lossless --trim --extrude 1
 ```
 
-It packs images into pages with TexturePacker "hash" JSON (PixiJS, Phaser). Frame names are paths under the directory without the extension. More pages are added as `units-1.webp`/`units-1.json` when needed, and the first JSON links them through `related_multi_packs`. Output is deterministic. `codex-img atlas --help` lists padding, `--max-size` and `--pot`.
+It packs images into pages with TexturePacker "hash" JSON (PixiJS, Phaser). Frame names are paths under the directory without the extension. More pages are added as `units-1.webp`/`units-1.json` when needed, and the first JSON links them through `related_multi_packs`. Output is deterministic. Identical images are stored once, with every name pointing at the shared pixels. WebP pages default to `--effort 9` (smallest, slowest). `codex-img atlas --help` lists padding, `--max-size` and `--pot`.
 
 ## Map tile pyramids: `pyramid`
 

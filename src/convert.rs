@@ -44,6 +44,9 @@ Options:
       --dither              Dither when quantizing
       --output-quality <n>  1-100 for jpeg (default 90) and lossy webp (default 80)
       --lossless            Lossless webp instead of lossy
+      --effort <0-9>        WebP encoder effort, like cwebp -z (default 6). 9 is
+                            several times slower and makes lossless webp about
+                            5-25% smaller; it re-encodes lossless webp input
       --trim[=pad]          Crop transparent borders to the visible pixels (alpha
                             above 16; fainter specks don't count), keeping pad
                             transparent pixels around them (default 0). An image
@@ -169,6 +172,7 @@ pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
             "--dither" => opts.encoding.dither = true,
             "--output-quality" => opts.encoding.quality = Some(cli::parse_output_quality(&value()?)?),
             "--lossless" => opts.encoding.lossless = true,
+            "--effort" => opts.encoding.effort = Some(cli::parse_effort(&value()?)?),
             "--trim" => opts.transform.trim = Some(inline.as_deref().map(transform::parse_trim_padding).transpose()?.unwrap_or(0)),
             "--resize" => opts.transform.resize = Some(Resize::parse(&value()?)?),
             "--fit" => opts.transform.fit = Some(Fit::parse(&value()?)?),

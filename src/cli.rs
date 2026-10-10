@@ -395,6 +395,7 @@ pub fn parse(args: &[String]) -> Result<Command> {
         dither: flags.contains(&"dither"),
         quality: last("output-quality").map(|n| parse_output_quality(&n)).transpose()?,
         lossless: flags.contains(&"lossless"),
+        effort: None,
     };
     // The format may still be unknown here (it defaults to PNG); generate() checks again.
     encoding.check(format)?;
@@ -539,6 +540,10 @@ pub fn parse_colors(value: &str) -> Result<u16> {
 
 pub fn parse_output_quality(value: &str) -> Result<u8> {
     value.parse::<u8>().ok().filter(|n| (1..=100).contains(n)).ok_or_else(|| Error::usage("--output-quality must be an integer from 1 to 100."))
+}
+
+pub fn parse_effort(value: &str) -> Result<u8> {
+    value.parse::<u8>().ok().filter(|n| *n <= images::MAX_EFFORT).ok_or_else(|| Error::usage("--effort must be an integer from 0 to 9."))
 }
 
 fn create_parent(path: &Path) -> Result<()> {

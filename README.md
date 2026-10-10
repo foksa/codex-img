@@ -391,6 +391,7 @@ Without `-o`, output goes next to the input as `<name>.<ext>`, or `<name>.min.<e
 | `--key-cut[=F]` | Before `--key`, from each `--key-region` edge inward, cut off whole rows (or columns) while at least `F` (default 0.4) of their visible pixels match the key: below a boat's waterline, for example. Only for objects that span most of the line; a narrow building in a wide sky would be cut through |
 | `--trim-density [EDGES:]F` | With `--trim`, also drop sparse rows at the bottom: those with fewer visible pixels than `F` (e.g. `0.15`) of the fullest row. Leftover specks under a sprite then don't become its bottom edge, which would make a sprite that stands on its bottom edge float. Other edges: `top:0.15`, `bottom,left:0.15`, `all:0.15`. A thin mast, pole or trunk is sparse too, so check the result |
 | `--no-bleed` | Keep the colour stored under fully transparent pixels (see below) |
+| `--effort N` | WebP encoder effort, 0 (fastest) to 9 (smallest), like `cwebp -z` (default 6). At 9, lossless WebP is about 5–25% smaller and takes several times longer. An explicit effort re-encodes lossless WebP input (lossy input is never re-encoded for it) |
 | `--force` | Replace existing output files (never an input). The file is written to a temporary name and renamed into place, and one that already holds the same bytes is left untouched (`--json` reports `unchanged: true`) |
 
 Use `--nearest` for whole-number upscaling of pixel art, such as a 32×32 sprite to 96×96. Downscaling generated pixel art with it gives uneven pixels, because the art is not on a true grid. Grid detection is a later feature. Batch assets and defaults accept `nearest: true`; it is a flag, with no filter selection.
@@ -443,7 +444,7 @@ codex-img atlas maps/units/ -o web/units.webp --prefix units/ --lossless --trim 
 codex-img atlas flags/ -o web/flags.png --max-size 1024 --pot --force
 ```
 
-Images in a directory are found recursively and named by their path under it, without the extension (`Germans/infantry`). A file given directly is named by its file name. When one page isn't enough, the next pages are `units-1.webp` + `units-1.json` and so on. The first JSON lists the others in `meta.related_multi_packs`, so PixiJS's `Assets.load('units.json')` loads every page. Inputs can be PNG, JPEG, WebP or GIF. Sprites are never rotated. Non-image files in a directory are skipped with a warning, but an image in a format codex-img can't read (BMP, TIFF and so on), an unreadable input or a duplicate frame name fails the whole atlas rather than leaving a frame out.
+Images in a directory are found recursively and named by their path under it, without the extension (`Germans/infantry`). A file given directly is named by its file name. When one page isn't enough, the next pages are `units-1.webp` + `units-1.json` and so on. The first JSON lists the others in `meta.related_multi_packs`, so PixiJS's `Assets.load('units.json')` loads every page. Inputs can be PNG, JPEG, WebP or GIF. Sprites are never rotated. Images with the same visible pixels (after `--trim`) are stored once, and all their frames point at the same place on the page, each keeping its own `spriteSourceSize` and `sourceSize`; the colour under fully transparent pixels doesn't count. The last page is sized to fit, as close to square as packing allows. Non-image files in a directory are skipped with a warning, but an image in a format codex-img can't read (BMP, TIFF and so on), an unreadable input or a duplicate frame name fails the whole atlas rather than leaving a frame out.
 
 | Option | |
 |---|---|
@@ -455,6 +456,7 @@ Images in a directory are found recursively and named by their path under it, wi
 | `--max-size PX` | Largest page side (default 2048) |
 | `--pot` | Power-of-two page sides; needs a power-of-two `--max-size` |
 | `--lossless`, `--output-quality`, `-c`, `--dither`, `--no-bleed` | Page encoding, as in `convert`. Use `--lossless` for sprites; PNG and lossless WebP pages get edge bleed under transparent pixels |
+| `--effort N` | WebP encoder effort, as in `convert`, but the default is 9: an atlas is built once and loaded often. A big lossless sheet comes out about 25% smaller than at 6, and takes several times longer to encode |
 | `--force` | Replace existing pages; files whose bytes didn't change are left untouched |
 | `--json` | Report `pages` (image, json, size, frames, bytes), `frames`, `inputBytes` and `bytes` |
 
@@ -477,7 +479,7 @@ The output is `<dir>/<level>/x_y.webp` plus `<dir>/pyramid.json`: `{"mapWidth", 
 | `--merge PX` | Output tile size, a multiple of `--tile` (512, 1024): fewer, bigger tiles |
 | `--levels N` | At most N levels, level 0 included |
 | `-f FMT` | `webp` (default) or `png` |
-| `--lossless`, `--output-quality`, `-c`, `--dither`, `--no-bleed` | Tile encoding, as in `convert`. Flat-colour maps are much smaller with `--lossless`; painted relief is smaller lossy |
+| `--lossless`, `--output-quality`, `-c`, `--dither`, `--no-bleed`, `--effort` | Tile encoding, as in `convert`. Flat-colour maps are much smaller with `--lossless`; painted relief is smaller lossy. `--effort 9` shaves a few percent off lossless tiles; on lossy tiles it barely helps |
 | `--force` | Replace an existing pyramid; files whose bytes didn't change are left untouched |
 | `--json` | Report per level (`size`, `tiles`, `bytes`, `changed`) and totals |
 

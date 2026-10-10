@@ -58,6 +58,9 @@ Options:
   -f, --format <fmt>        webp (default) or png
       --lossless            Lossless webp
       --output-quality <n>  Lossy webp quality, 1-100 (default 80)
+      --effort <0-9>        WebP encoder effort, like cwebp -z (default 6). 9 is
+                            several times slower and makes lossless tiles a few
+                            percent smaller
   -c, --colors <n>          Quantize PNG tiles to n colours (2-256)
       --dither              Dither when quantizing
       --no-bleed            Leave fully transparent pixels as they are (see convert)
@@ -117,6 +120,7 @@ pub fn parse(args: &[String]) -> Result<Option<PyramidOptions>> {
             }
             "--lossless" if inline.is_none() => encoding.lossless = true,
             "--output-quality" => encoding.quality = Some(cli::parse_output_quality(&value()?)?),
+            "--effort" => encoding.effort = Some(cli::parse_effort(&value()?)?),
             "-c" | "--colors" => encoding.colors = Some(cli::parse_colors(&value()?)?),
             "--dither" if inline.is_none() => encoding.dither = true,
             "--no-bleed" if inline.is_none() => no_bleed = true,

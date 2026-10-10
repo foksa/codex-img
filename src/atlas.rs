@@ -54,6 +54,8 @@ Options:
                             --max-size)
       --lossless            Lossless webp (recommended for sprites)
       --output-quality <n>  Lossy webp quality, 1-100 (default 80)
+      --effort <0-9>        WebP encoder effort, like cwebp -z (default 9: slowest,
+                            and lossless pages come out about 5-25% smaller than at 6)
   -c, --colors <n>          Quantize PNG pages to n colours (2-256)
       --dither              Dither when quantizing
       --no-bleed            Leave fully transparent pixels black. By default PNG
@@ -107,6 +109,7 @@ pub fn parse(args: &[String]) -> Result<Option<AtlasOptions>> {
             "--pot" if inline.is_none() => packing.pot = true,
             "--lossless" if inline.is_none() => encoding.lossless = true,
             "--output-quality" => encoding.quality = Some(cli::parse_output_quality(&value()?)?),
+            "--effort" => encoding.effort = Some(cli::parse_effort(&value()?)?),
             "-c" | "--colors" => encoding.colors = Some(cli::parse_colors(&value()?)?),
             "--dither" if inline.is_none() => encoding.dither = true,
             "--no-bleed" if inline.is_none() => no_bleed = true,
@@ -130,6 +133,10 @@ pub fn parse(args: &[String]) -> Result<Option<AtlasOptions>> {
         return Err(Error::usage("--pot needs a power-of-two --max-size, such as 1024 or 2048."));
     }
     encoding.check(Some(format))?;
+    // An atlas is built once and loaded many times: spend the encoder time.
+    if format == Format::Webp && encoding.effort.is_none() {
+        encoding.effort = Some(images::MAX_EFFORT);
+    }
     Ok(Some(AtlasOptions { inputs, output, format, encoding, packing, prefix, no_bleed, force, json, quiet }))
 }
 
@@ -256,7 +263,10 @@ mod tests {
     fn parses_and_validates_options() {
         let o = parse(&args(&["units/", "-o", "u.webp", "--trim", "--padding=1", "--extrude", "1", "--max-size", "1024", "--pot", "--lossless", "--prefix", "units/"])).unwrap().unwrap();
         assert_eq!((o.format, o.packing, o.prefix.as_str(), o.encoding.lossless), (Format::Webp, Packing { trim: true, padding: 1, extrude: 1, max_size: 1024, pot: true }, "units/", true));
+        assert_eq!(o.encoding.effort, Some(images::MAX_EFFORT), "webp atlases default to the most effort");
+        assert_eq!(parse(&args(&["a", "-o", "a.webp", "--effort", "4"])).unwrap().unwrap().encoding.effort, Some(4));
         let o = parse(&args(&["a.png", "-o", "a.png"])).unwrap().unwrap();
+        assert_eq!(o.encoding.effort, None);
         assert_eq!((o.packing.padding, o.packing.max_size), (DEFAULT_PADDING, DEFAULT_MAX_SIZE));
         assert_eq!(parse(&args(&["-h"])).unwrap(), None);
         let error = |list: &[&str]| parse(&args(list)).unwrap_err().message;
@@ -266,6 +276,8 @@ mod tests {
         assert!(error(&["a.png", "-o", "a.png", "--pot", "--max-size", "1000"]).contains("power-of-two"));
         assert!(error(&["a.png", "-o", "a.webp", "-c", "16"]).contains("PNG"));
         assert!(error(&["a.png", "-o", "a.png", "--extrude", "99"]).contains("--extrude"));
+        assert!(error(&["a.png", "-o", "a.webp", "--effort", "10"]).contains("0 to 9"));
+        assert!(error(&["a.png", "-o", "a.png", "--effort", "9"]).contains("WebP"));
     }
 
     #[test]

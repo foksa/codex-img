@@ -513,6 +513,7 @@ fn parse_asset(key: &str, fields: &Fields, style: Option<&str>, keys: &[&str], b
         dither: fields.flag("dither")?,
         quality: fields.text("output_quality")?.map(|v| cli::parse_output_quality(&v)).transpose()?,
         lossless: fields.flag("lossless")?,
+        effort: None,
     };
     encoding.check(Some(format))?;
     let mut resize = fields.string("resize")?.map(|v| Resize::parse(&v)).transpose()?;

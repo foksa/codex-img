@@ -88,7 +88,17 @@ pub struct Encoding {
     pub quality: Option<u8>,
     /// Lossless WebP instead of lossy.
     pub lossless: bool,
+    /// WebP encoder effort, 0 (fastest) to 9 (smallest), like `cwebp -z`. None is libwebp's
+    /// default, which matches 6.
+    pub effort: Option<u8>,
 }
+
+/// Most effort, for build steps that run once.
+pub const MAX_EFFORT: u8 = 9;
+
+/// libwebp's lossless presets (`WebPConfigLosslessPreset`, `cwebp -z`): method and quality per
+/// effort level. 9 also turns on libwebp's slowest lossless search, which pays off on big sheets.
+const EFFORT_PRESETS: [(i32, f32); 10] = [(0, 0.0), (1, 20.0), (2, 25.0), (3, 30.0), (3, 50.0), (4, 50.0), (4, 75.0), (4, 90.0), (5, 90.0), (6, 100.0)];
 
 impl Encoding {
     /// Reject settings the output format can't use. With `None` (format not known yet) only the
@@ -107,6 +117,9 @@ impl Encoding {
         if self.lossless && format != Format::Webp {
             return Err(Error::usage(format!("--lossless only applies to WebP output, not {}.", format.name())));
         }
+        if self.effort.is_some() && format != Format::Webp {
+            return Err(Error::usage(format!("--effort only applies to WebP output, not {}.", format.name())));
+        }
         if self.quality.is_some() && format == Format::Png {
             return Err(Error::usage("--output-quality applies to JPEG and WebP; PNG is always lossless (use --colors to shrink it)."));
         }
@@ -116,11 +129,12 @@ impl Encoding {
     /// Whether `bytes`, already in `format`, satisfy these settings as they are. Re-encoding a
     /// lossy file only loses more, so it happens when the settings ask for something the file
     /// isn't: a palette, an explicit quality, or the other kind of WebP (lossy is the default).
+    /// An explicit effort re-encodes lossless WebP, which costs nothing but time.
     fn is_satisfied_by(&self, bytes: &[u8], format: Format) -> bool {
         match format {
             Format::Png => self.colors.is_none(),
             Format::Jpeg => self.quality.is_none(),
-            Format::Webp => self.quality.is_none() && webp_is_lossless(bytes) == Some(self.lossless),
+            Format::Webp => self.quality.is_none() && webp_is_lossless(bytes) == Some(self.lossless) && !(self.lossless && self.effort.is_some()),
         }
     }
 
@@ -202,7 +216,7 @@ pub fn encode(rgba: &image::RgbaImage, wanted: Format, enc: &Encoding) -> Result
         (Format::Png, Some(colors)) => quantize_png(rgba, colors, enc.dither).map_err(failed),
         (Format::Png, None) => encode_png(rgba).map_err(failed),
         (Format::Jpeg, _) => encode_jpeg(rgba, enc.quality.unwrap_or(JPEG_QUALITY)).map_err(failed),
-        (Format::Webp, _) => encode_webp(rgba, enc.lossless, enc.quality.unwrap_or(WEBP_QUALITY)).map_err(failed),
+        (Format::Webp, _) => encode_webp(rgba, enc.lossless, enc.quality.unwrap_or(WEBP_QUALITY), enc.effort).map_err(failed),
     }
 }
 
@@ -254,9 +268,11 @@ fn encode_png(rgba: &image::RgbaImage) -> std::result::Result<Vec<u8>, String> {
 
 /// WebP through libwebp: lossy at `quality`, or lossless. Alpha is kept either way (lossy WebP
 /// stores it losslessly by default). `exact` stops lossless mode from zeroing the colour of fully
-/// transparent pixels, so --lossless really keeps every pixel. The webp crate's `encode*` helpers
-/// unwrap internally, which would abort the process (panic = "abort"); encode_advanced doesn't.
-fn encode_webp(rgba: &image::RgbaImage, lossless: bool, quality: u8) -> std::result::Result<Vec<u8>, String> {
+/// transparent pixels, so --lossless really keeps every pixel. `effort` picks a libwebp preset:
+/// lossless takes its method and quality (quality is effort there), lossy only its method. The
+/// webp crate's `encode*` helpers unwrap internally, which would abort the process
+/// (panic = "abort"); encode_advanced doesn't.
+fn encode_webp(rgba: &image::RgbaImage, lossless: bool, quality: u8, effort: Option<u8>) -> std::result::Result<Vec<u8>, String> {
     let (width, height) = rgba.dimensions();
     let rgb;
     let encoder = if is_opaque(rgba) {
@@ -270,6 +286,13 @@ fn encode_webp(rgba: &image::RgbaImage, lossless: bool, quality: u8) -> std::res
     config.exact = i32::from(lossless);
     config.alpha_compression = i32::from(!lossless);
     config.quality = f32::from(quality);
+    if let Some(effort) = effort {
+        let (method, effort_quality) = EFFORT_PRESETS[usize::from(effort.min(MAX_EFFORT))];
+        config.method = method;
+        if lossless {
+            config.quality = effort_quality;
+        }
+    }
     let memory = encoder.encode_advanced(&config).map_err(|e| format!("WebP encoding failed ({e:?})"))?;
     Ok(memory.to_vec())
 }
@@ -415,6 +438,27 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn effort_keeps_lossless_pixels_and_only_applies_to_webp() {
+        let png = gradient();
+        let original = image::load_from_memory(&png).unwrap().to_rgba8();
+        let lossless = |effort| convert(&png, Format::Webp, &Encoding { lossless: true, effort, ..Default::default() }).unwrap();
+        let (fast, max) = (lossless(Some(0)), lossless(Some(MAX_EFFORT)));
+        for webp in [&fast, &max] {
+            assert_eq!(image::load_from_memory(webp).unwrap().to_rgba8(), original);
+        }
+        assert!(max.len() <= fast.len(), "{} vs {}", max.len(), fast.len());
+        assert_eq!(lossless(Some(6)), lossless(None), "6 is libwebp's default");
+        assert_eq!(webp_is_lossless(&convert(&png, Format::Webp, &Encoding { effort: Some(MAX_EFFORT), ..Default::default() }).unwrap()), Some(false));
+        let effort = Encoding { effort: Some(3), ..Default::default() };
+        assert!(effort.check(Some(Format::Png)).unwrap_err().message.contains("--effort"));
+        assert!(effort.check(Some(Format::Webp)).is_ok());
+        // Explicit effort re-encodes lossless WebP (free) but never lossy WebP (lossier).
+        let lossy = convert(&png, Format::Webp, &Encoding::default()).unwrap();
+        assert!(needs_encoding(&fast, Format::Webp, Format::Webp, &Encoding { lossless: true, effort: Some(9), ..Default::default() }));
+        assert!(!needs_encoding(&lossy, Format::Webp, Format::Webp, &Encoding { effort: Some(9), ..Default::default() }));
+    }
+
+    #[test]
     fn webp_passthrough_only_when_the_file_already_matches() {
         let png = gradient();
         let lossless = convert(&png, Format::Webp, &Encoding { lossless: true, ..Default::default() }).unwrap();
@@ -472,7 +516,7 @@ pub(crate) mod tests {
 
     #[test]
     fn encoding_check_rejects_settings_the_format_cannot_use() {
-        let enc = |colors, dither, quality, lossless| Encoding { colors, dither, quality, lossless };
+        let enc = |colors, dither, quality, lossless| Encoding { colors, dither, quality, lossless, effort: None };
         assert!(enc(None, true, None, false).check(None).unwrap_err().message.contains("--dither"));
         assert!(enc(None, false, Some(80), true).check(None).unwrap_err().message.contains("combined"));
         assert!(enc(Some(8), false, None, false).check(Some(Format::Jpeg)).unwrap_err().message.contains("PNG"));
