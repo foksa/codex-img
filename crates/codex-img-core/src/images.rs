@@ -309,7 +309,8 @@ fn encode_jpeg(rgba: &image::RgbaImage, quality: u8) -> std::result::Result<Vec<
 }
 
 /// Palette PNG (colour type 3) with a tRNS chunk for alpha, like pngquant. Images that already
-/// have few enough colours keep them exactly; otherwise exoquant picks the palette (k-means) and
+/// have few enough colours keep them exactly (every fully transparent pixel counts as one colour,
+/// whatever it hides); otherwise exoquant picks the palette (k-means) and
 /// remaps. Dithering is off by default: it smooths gradients but speckles flat areas, which then
 /// compress far worse (a flat icon at 64 colours: 13 KB plain, 109 KB dithered).
 fn indexed(rgba: &image::RgbaImage, colors: u16, dither: bool) -> (Vec<exoquant::Color>, Vec<u8>) {
@@ -319,6 +320,7 @@ fn indexed(rgba: &image::RgbaImage, colors: u16, dither: bool) -> (Vec<exoquant:
     let mut lookup = std::collections::HashMap::new();
     let mut indices = Vec::with_capacity(pixels.len());
     for pixel in &pixels {
+        let pixel = if pixel.a == 0 { &Color::new(0, 0, 0, 0) } else { pixel };
         let next = lookup.len();
         let index = *lookup.entry(*pixel).or_insert(next);
         if index == next {
@@ -552,6 +554,21 @@ pub(crate) mod tests {
         // Few distinct colours are kept exactly, with no dithering.
         let exact = convert(PNG, Format::Png, &enc(256, false)).unwrap();
         assert_eq!(image::load_from_memory(&exact).unwrap().to_rgba8().get_pixel(0, 0).0[3], 0);
+
+        // Colour hidden under fully transparent pixels doesn't use up the palette: three visible
+        // colours plus noisy transparency fit -c 4 exactly.
+        let noisy = image::RgbaImage::from_fn(16, 16, |x, y| match (x + y) % 4 {
+            0 => image::Rgba([(x * 16) as u8, (y * 16) as u8, 7, 0]),
+            1 => image::Rgba([200, 10, 10, 255]),
+            2 => image::Rgba([10, 200, 10, 90]),
+            _ => image::Rgba([10, 10, 200, 255]),
+        });
+        let mut noisy_png = std::io::Cursor::new(Vec::new());
+        noisy.write_to(&mut noisy_png, image::ImageFormat::Png).unwrap();
+        let kept = image::load_from_memory(&convert(&noisy_png.into_inner(), Format::Png, &enc(4, false)).unwrap()).unwrap().to_rgba8();
+        for (a, b) in noisy.pixels().zip(kept.pixels()) {
+            assert!(a == b || (a.0[3] == 0 && b.0[3] == 0), "{a:?} became {b:?}");
+        }
     }
 
     #[test]
