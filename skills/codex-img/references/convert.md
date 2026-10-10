@@ -11,7 +11,7 @@
 
 ## Format and file size
 
-- `codex-img convert in.png -o out.webp` (or `-f jpeg`) changes the format. `--output-quality N` (1–100) trades size for quality; `--lossless` makes WebP exact.
+- `codex-img convert in.png -o out.webp` (or `-f jpeg`) changes the format. `--output-quality N` (1–100) trades size for quality; `--lossless` makes WebP exact. `--effort 9` (0–9, default 6) makes lossless WebP about 5–25% smaller at several times the encode time; worth it for shipped game assets.
 - `codex-img convert icon.png -c 64` writes `icon.min.png`, a palette PNG, for flat art (icons, stickers, logos). `-c 64` to `-c 256` usually cuts the file 10x or more with no visible change. Don't use it for photos or soft gradients; if banding shows, raise the count or add `--dither`.
 - `codex-img convert in.png` writes `in.min.png`, lossless recompression only. PNG output is always recompressed, which roughly halves the backend's files.
 - For images going on a website, lossy WebP is usually the smallest by far: a 946 KB PNG became 7.5 KB.

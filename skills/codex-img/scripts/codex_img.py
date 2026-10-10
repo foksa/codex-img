@@ -20,7 +20,7 @@ import urllib.error
 import urllib.request
 import uuid
 
-VERSION = "0.9.1-py"
+VERSION = "0.10.0-py"
 BASE_URL = "https://chatgpt.com/backend-api/codex"
 IMAGE_MODEL = "gpt-image-2"
 JWT_CLAIM_PATH = "https://api.openai.com/auth"

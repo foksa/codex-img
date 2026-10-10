@@ -1,6 +1,6 @@
 [package]
 name = "codex-img"
-version = "0.9.1"
+version = "0.10.0"
 edition = "2021"
 description = "Generate and edit images with your ChatGPT/Codex subscription, and convert, pack and tile them locally."
 license = "Apache-2.0"
