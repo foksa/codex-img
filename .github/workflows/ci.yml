@@ -41,15 +41,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
-        python: ["3.9", "3.x"]
         include:
+          # 3.9 is pinned to 24.04: actions/setup-python has no 3.9 build for ubuntu-latest (26.04).
+          - os: ubuntu-24.04
+            python: "3.9"
+          - os: ubuntu-latest
+            python: "3.x"
           - os: windows-latest
             python: "3.x"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
       - run: python tests/test_codex_img_py.py
