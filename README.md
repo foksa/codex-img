@@ -34,9 +34,9 @@ The login is read from `%USERPROFILE%\.codex\auth.json` (or `%CODEX_HOME%\auth.j
 
 On Windows, `install.sh` doesn't apply: run `cargo build --release` and use `target\release\codex-img.exe`.
 
-This builds `target/release/codex-img`, a single ~2 MB binary with no runtime dependencies, and symlinks:
-- the binary to `~/.local/bin/codex-img` (override with `BIN_DIR`);
-- the agent skill `skills/codex-img` into `~/.claude/skills/` and `~/.codex/skills/`, for whichever of those tools you have installed.
+This builds `target/release/codex-img`, a single ~2 MB binary with no runtime dependencies, then:
+- copies the binary to `~/.local/bin/codex-img` (override with `BIN_DIR`), so it survives `cargo clean`; re-run `./scripts/install.sh` after updating;
+- symlinks the agent skill `skills/codex-img` into `~/.claude/skills/` and `~/.codex/skills/`, for whichever of those tools you have installed.
 
 You need to be logged in once with `codex login` (ChatGPT sign-in). `codex-img status` checks the login offline, without using any quota.
 
@@ -444,7 +444,7 @@ codex-img atlas maps/units/ -o web/units.webp --prefix units/ --lossless --trim 
 codex-img atlas flags/ -o web/flags.png --max-size 1024 --pot --force
 ```
 
-Images in a directory are found recursively and named by their path under it, without the extension (`Germans/infantry`). A file given directly is named by its file name. When one page isn't enough, the next pages are `units-1.webp` + `units-1.json` and so on. The first JSON lists the others in `meta.related_multi_packs`, so PixiJS's `Assets.load('units.json')` loads every page. Inputs can be PNG, JPEG, WebP or GIF. Sprites are never rotated. Images with the same visible pixels (after `--trim`) are stored once, and all their frames point at the same place on the page, each keeping its own `spriteSourceSize` and `sourceSize`; the colour under fully transparent pixels doesn't count. The last page is sized to fit, as close to square as packing allows. Non-image files in a directory are skipped with a warning, but an image in a format codex-img can't read (BMP, TIFF and so on), an unreadable input or a duplicate frame name fails the whole atlas rather than leaving a frame out.
+Images in a directory are found recursively and named by their path under it, without the extension (`Germans/infantry`). A file given directly is named by its file name. When one page isn't enough, the next pages are `units-1.webp` + `units-1.json` and so on. The first JSON lists the others in `meta.related_multi_packs`, so PixiJS's `Assets.load('units.json')` loads every page. Inputs can be PNG, JPEG, WebP or GIF. Sprites are only rotated with `--rotate`. Images with the same visible pixels (after `--trim`) are stored once, and all their frames point at the same place on the page, each keeping its own `spriteSourceSize` and `sourceSize`; the colour under fully transparent pixels doesn't count. The last page is sized to fit, as close to square as packing allows. Non-image files in a directory are skipped with a warning, but an image in a format codex-img can't read (BMP, TIFF and so on), an unreadable input or a duplicate frame name fails the whole atlas rather than leaving a frame out.
 
 | Option | |
 |---|---|
@@ -455,6 +455,7 @@ Images in a directory are found recursively and named by their path under it, wi
 | `--extrude PX` | Repeat each sprite's edge pixels this far outward, outside its frame, so texture filtering doesn't pick up neighbours, 0–16 (default 0) |
 | `--max-size PX` | Largest page side (default 2048) |
 | `--pot` | Power-of-two page sides; needs a power-of-two `--max-size` |
+| `--rotate` | Let packing turn sprites 90° clockwise where that packs tighter (off by default). Their frames say `"rotated": true` and keep the unturned `w` and `h`, as TexturePacker writes them. PixiJS draws them upright; Phaser 3 marks rotated frames unsupported and draws them mirrored, so leave this off for Phaser |
 | `--lossless`, `--output-quality`, `-c`, `--dither`, `--no-bleed` | Page encoding, as in `convert`. Use `--lossless` for sprites; PNG and lossless WebP pages get edge bleed under transparent pixels |
 | `--effort N` | WebP encoder effort, as in `convert`, but the default is 9: an atlas is built once and loaded often. A big lossless sheet comes out about 25% smaller than at 6, and takes several times longer to encode |
 | `--force` | Replace existing pages; files whose bytes didn't change are left untouched |

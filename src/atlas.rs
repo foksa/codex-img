@@ -52,6 +52,11 @@ Options:
       --max-size <px>       Largest page side (default 2048)
       --pot                 Power-of-two page sides (needs a power-of-two
                             --max-size)
+      --rotate              Let packing turn sprites 90° clockwise where that
+                            packs tighter; their frames say "rotated": true and
+                            give the unturned size. PixiJS draws these upright;
+                            Phaser 3 doesn't support rotated frames (it draws
+                            them mirrored), so leave this off for Phaser
       --lossless            Lossless webp (recommended for sprites)
       --output-quality <n>  Lossy webp quality, 1-100 (default 80)
       --effort <0-9>        WebP encoder effort, like cwebp -z (default 9: slowest,
@@ -65,8 +70,13 @@ Options:
       --json                Print a JSON report to stdout
       --quiet               No progress on stderr
 
-Pages are never rotated. Frames are sorted by name, and the same inputs and options
-always give the same bytes.
+Packing tries several MaxRects placement rules with several sort orders (biggest
+first by longest side, area, height, width or perimeter). Of the layouts with the
+fewest pages, the 3 with the least page area each get their last page shrunk to
+fit, and the squarest of those within 10% of the least area is kept.
+With --rotate, every rule also tries each non-square sprite turned and keeps the
+better fit (upright on a tie). Frames are sorted by name, and the same inputs and
+options always give the same bytes.
 
 Examples:
   codex-img atlas maps/units/ -o web/units.webp --prefix units/ --lossless --trim --extrude 1
@@ -107,6 +117,7 @@ pub fn parse(args: &[String]) -> Result<Option<AtlasOptions>> {
             "--extrude" => packing.extrude = number(name, &value()?, 0..=16)?,
             "--max-size" => packing.max_size = number(name, &value()?, 16..=MAX_PAGE_SIDE)?,
             "--pot" if inline.is_none() => packing.pot = true,
+            "--rotate" if inline.is_none() => packing.rotate = true,
             "--lossless" if inline.is_none() => encoding.lossless = true,
             "--output-quality" => encoding.quality = Some(cli::parse_output_quality(&value()?)?),
             "--effort" => encoding.effort = Some(cli::parse_effort(&value()?)?),
@@ -261,13 +272,13 @@ mod tests {
 
     #[test]
     fn parses_and_validates_options() {
-        let o = parse(&args(&["units/", "-o", "u.webp", "--trim", "--padding=1", "--extrude", "1", "--max-size", "1024", "--pot", "--lossless", "--prefix", "units/"])).unwrap().unwrap();
-        assert_eq!((o.format, o.packing, o.prefix.as_str(), o.encoding.lossless), (Format::Webp, Packing { trim: true, padding: 1, extrude: 1, max_size: 1024, pot: true }, "units/", true));
+        let o = parse(&args(&["units/", "-o", "u.webp", "--trim", "--padding=1", "--extrude", "1", "--max-size", "1024", "--pot", "--rotate", "--lossless", "--prefix", "units/"])).unwrap().unwrap();
+        assert_eq!((o.format, o.packing, o.prefix.as_str(), o.encoding.lossless), (Format::Webp, Packing { trim: true, padding: 1, extrude: 1, max_size: 1024, pot: true, rotate: true }, "units/", true));
         assert_eq!(o.encoding.effort, Some(images::MAX_EFFORT), "webp atlases default to the most effort");
         assert_eq!(parse(&args(&["a", "-o", "a.webp", "--effort", "4"])).unwrap().unwrap().encoding.effort, Some(4));
         let o = parse(&args(&["a.png", "-o", "a.png"])).unwrap().unwrap();
         assert_eq!(o.encoding.effort, None);
-        assert_eq!((o.packing.padding, o.packing.max_size), (DEFAULT_PADDING, DEFAULT_MAX_SIZE));
+        assert_eq!((o.packing.padding, o.packing.max_size, o.packing.rotate), (DEFAULT_PADDING, DEFAULT_MAX_SIZE, false), "rotation is off by default");
         assert_eq!(parse(&args(&["-h"])).unwrap(), None);
         let error = |list: &[&str]| parse(&args(list)).unwrap_err().message;
         assert!(error(&["a.png"]).contains("-o"));
@@ -278,6 +289,8 @@ mod tests {
         assert!(error(&["a.png", "-o", "a.png", "--extrude", "99"]).contains("--extrude"));
         assert!(error(&["a.png", "-o", "a.webp", "--effort", "10"]).contains("0 to 9"));
         assert!(error(&["a.png", "-o", "a.png", "--effort", "9"]).contains("WebP"));
+        assert!(error(&["a.png", "-o", "a.png", "--rotate=yes"]).contains("Unknown atlas option"));
+        assert!(help().contains("--rotate") && !help().contains("never rotated"));
     }
 
     #[test]
