@@ -156,7 +156,12 @@ impl<'a> Matcher<'a> {
 /// Every visible pixel becomes its nearest palette colour, every transparent one (0,0,0,0).
 /// Expects hard alpha (0 or 255).
 pub fn snap_exact(rgba: &mut RgbaImage, colors: &[Rgb]) {
-    let mut matcher = Matcher::new(colors, 1.0);
+    map(rgba, colors, 1.0);
+}
+
+/// Each visible pixel becomes its nearest palette colour, lightness weighed at `lightness`.
+fn map(rgba: &mut RgbaImage, colors: &[Rgb], lightness: f32) {
+    let mut matcher = Matcher::new(colors, lightness);
     for p in rgba.pixels_mut() {
         p.0 = if p.0[3] < 128 { [0; 4] } else {
             let [r, g, b] = matcher.nearest([p.0[0], p.0[1], p.0[2]]);
@@ -170,17 +175,18 @@ pub fn snap_exact(rgba: &mut RgbaImage, colors: &[Rgb]) {
 pub fn snap(rgba: &mut RgbaImage, colors: &[Rgb], clean: bool) {
     if clean {
         reduce(rgba, (colors.len() * 2).clamp(CLEAN_COLORS, 256));
-        let mut matcher = Matcher::new(colors, CLEAN_LIGHTNESS);
-        for p in rgba.pixels_mut() {
-            p.0 = if p.0[3] < 128 { [0; 4] } else {
-                let [r, g, b] = matcher.nearest([p.0[0], p.0[1], p.0[2]]);
-                [r, g, b, 255]
-            };
-        }
+        map(rgba, colors, CLEAN_LIGHTNESS);
     } else {
         snap_exact(rgba, colors);
     }
     despeckle(rgba);
+}
+
+/// The pass for pixel art already snapped to one pixel per cell: each cell takes its nearest
+/// palette colour (hue first when `clean`). No reducing and no despeckle: on cells a lone pixel
+/// is an eye, an outline or a highlight, not noise.
+pub fn snap_cells(rgba: &mut RgbaImage, colors: &[Rgb], clean: bool) {
+    map(rgba, colors, if clean { CLEAN_LIGHTNESS } else { 1.0 });
 }
 
 /// Reduce the visible pixels to `count` colours (exoquant k-means, as -c uses), so each region of

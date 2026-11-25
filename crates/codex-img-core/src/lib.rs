@@ -5,6 +5,7 @@ pub mod transform;
 pub mod palette;
 pub mod atlas;
 pub mod pyramid;
+pub mod pixel_grid;
 pub mod sheet;
 pub mod tile;
 pub mod conversion_record;

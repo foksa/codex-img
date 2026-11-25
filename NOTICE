@@ -9,6 +9,11 @@ vendor/exoquant is exoquant 0.2.0 (https://github.com/exoticorn/exoquant-rs), Co
 Dennis Ranke, licensed under the MIT License (vendor/exoquant/LICENSE). Its histogram was changed
 to iterate in a fixed order; see vendor/exoquant/VENDORED.md.
 
+Portions of crates/codex-img-core/src/pixel_grid.rs (edge profiles, the FFT period and phase
+estimate, the autocorrelation lag and the elastic boundary fit) are derived from unfake.js
+(https://github.com/jenissimo/unfake.js, crates/unfake-core), Copyright (c) 2024 unfake.js team,
+licensed under the MIT License (reproduced in that file's header).
+
 skills/codex-img/references/prompting.md adapts prompting guidance from the imagegen skills in
 pi-codex-image-gen and in OpenAI Codex, both licensed under the Apache License, Version 2.0.
 

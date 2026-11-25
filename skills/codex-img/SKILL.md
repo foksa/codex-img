@@ -52,7 +52,7 @@ codex-img convert <file> -o <out.webp> --json                  # convert/trim/re
 | `--palette` | A fixed palette: hex codes, a file, or a preset (`pico-8`, `nes`, `sweetie-16`, ...). Adds the hex codes to the prompt and snaps every colour to the palette. Never name a palette in the prompt without it: the model doesn't know the colours. |
 | `-f` | `png` (default), `jpeg`, or `webp` (lossy, keeps transparency). For images going on a website, lossy `webp` is usually the smallest by far. |
 | `-c` | Quantize PNG to 2–256 colours. For icons, stickers and flat art, `-c 64` to `-c 256` usually cuts the file 10x or more with no visible change. Not for photos or gradients. |
-| `--trim`, `--resize`, `--hard-alpha` | Applied before saving, as in `convert`; add `--nearest` for whole-number pixel-art upscaling; useful for sprites: `-b transparent --trim=4 --resize 400x`. These and `--palette` keep the untouched original as `<name>.raw.png` (`rawPath` in the JSON); keep it, since there's no seed to regenerate it. |
+| `--trim`, `--resize`, `--hard-alpha` | Applied before saving, as in `convert`; add `--nearest` for whole-number pixel-art upscaling, and `--pixel-grid auto` to reduce generated pixel art to one pixel per cell; useful for sprites: `-b transparent --trim=4 --resize 400x`. These and `--palette` keep the untouched original as `<name>.raw.png` (`rawPath` in the JSON); keep it, since there's no seed to regenerate it. |
 | `--parent`, `--no-parent` | Explicit version parent, or disable the automatic parent for an edit with one `-i`. |
 | `-q` | `low` \| `medium` \| `high` \| `auto`; a hint, and the subscription caps it at medium. |
 

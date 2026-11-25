@@ -3,6 +3,7 @@
 use crate::error::{Error, Result};
 use crate::images::{Encoding, Format};
 use crate::palette;
+use crate::pixel_grid;
 use image::{imageops, ImageBuffer, Rgba, RgbaImage};
 
 pub const MAX_SIDE: u32 = 8192;
@@ -376,6 +377,55 @@ pub fn parse_trim_padding(value: &str) -> Result<u32> {
         .ok_or_else(|| Error::usage(format!("--trim padding must be an integer from 0 to {MAX_TRIM_PADDING}, e.g. --trim=8.")))
 }
 
+/// `--pixel-grid`: reduce pixel art drawn with several image pixels per art pixel to one pixel per
+/// cell (`crate::pixel_grid`). `auto` (for pixel art) finds the cell size and refuses paintings
+/// and photos, though flat illustrations can pass; a size (possibly fractional) skips the search
+/// and the refusal on confidence.
+#[derive(Debug, Clone, Copy)]
+pub enum PixelGrid {
+    Auto,
+    Size(f32),
+}
+
+impl PartialEq for PixelGrid {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (PixelGrid::Auto, PixelGrid::Auto) => true,
+            (PixelGrid::Size(a), PixelGrid::Size(b)) => a.to_bits() == b.to_bits(),
+            _ => false,
+        }
+    }
+}
+
+// Sizes are finite (`parse` rejects NaN), so bitwise equality is an equivalence.
+impl Eq for PixelGrid {}
+
+impl PixelGrid {
+    pub fn parse(value: &str) -> Result<PixelGrid> {
+        if value.eq_ignore_ascii_case("auto") {
+            return Ok(PixelGrid::Auto);
+        }
+        value
+            .parse::<f32>()
+            .ok()
+            .filter(|n| n.is_finite() && (1.0..=MAX_SIDE as f32).contains(n))
+            .map(PixelGrid::Size)
+            .ok_or_else(|| Error::usage(format!("--pixel-grid must be auto or a cell size in image pixels from 1 to {MAX_SIDE}, e.g. 8 or 7.5.")))
+    }
+
+    /// As `parse` reads it back: `auto`, or the size (`7.5`, `8`).
+    pub fn name(&self) -> String {
+        match self {
+            PixelGrid::Auto => "auto".into(),
+            PixelGrid::Size(size) => size.to_string(),
+        }
+    }
+
+    pub fn options(&self) -> pixel_grid::DetectOptions {
+        pixel_grid::DetectOptions { size: match self { PixelGrid::Auto => None, PixelGrid::Size(size) => Some(*size) }, ..Default::default() }
+    }
+}
+
 /// A rectangle in input pixels. With trim padding it can reach past the input's edges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rect {
@@ -399,6 +449,8 @@ pub struct Transform {
     /// Also remove neighbours of removed pixels whose colour is within this of theirs, step by
     /// step: keying then follows gradients, like a sky fading from blue to gold, and stops at outlines.
     pub key_spread: Option<u8>,
+    /// After keying, reduce pixel art to one pixel per cell of its grid.
+    pub pixel_grid: Option<PixelGrid>,
     /// Crop to the visible (alpha > FAINT_ALPHA) pixels, plus this much transparent padding on each side.
     pub trim: Option<u32>,
     pub trim_density: Option<Density>,
@@ -428,13 +480,15 @@ pub struct Changes {
     /// Input coordinates: white is removed by keying, black is retained.
     pub key_mask: Option<image::GrayImage>,
     pub palette_colors: Option<usize>,
+    /// What `--pixel-grid` found: the grid it snapped to, or why it left the image as it was.
+    pub pixel_grid: Option<std::result::Result<pixel_grid::Grid, pixel_grid::Refusal>>,
 }
 
 pub struct Applied {
     pub image: RgbaImage,
     /// Whether any pixel (visible or not) differs from the input.
     pub changed: bool,
-    /// The trim rectangle, in input pixels.
+    /// The trim rectangle, in input pixels (in cells after a `pixel_grid` snap).
     pub trim: Option<Rect>,
     pub changes: Changes,
 }
@@ -460,7 +514,7 @@ impl Transform {
     /// Whether this edits visible pixels (key, trim, resize or hard alpha was asked for), as
     /// opposed to only the colour under transparent ones.
     pub fn edits(&self) -> bool {
-        self.trim.is_some() || self.resize.is_some() || self.hard_alpha.is_some() || !self.keys.is_empty() || self.palette.is_some()
+        self.trim.is_some() || self.resize.is_some() || self.hard_alpha.is_some() || !self.keys.is_empty() || self.palette.is_some() || self.pixel_grid.is_some()
     }
 
     /// A palette needs output that keeps exact colours: PNG (written as a palette PNG) or
@@ -487,39 +541,44 @@ impl Transform {
         }
     }
 
-    pub fn apply(&self, mut rgba: RgbaImage, format: Format, enc: &Encoding) -> Result<Applied> {
-        let mut changed = false;
+    pub fn apply(&self, rgba: RgbaImage, format: Format, enc: &Encoding) -> Result<Applied> {
         let mut trim = None;
-        let mut changes = Changes::default();
         // A palette has no half-transparent colours, so its edges are hardened too.
         let hard_alpha = self.hard_alpha.or(self.palette.as_ref().map(|_| palette::PALETTE_ALPHA));
-        if let Some(threshold) = hard_alpha {
-            let before = rgba.pixels().filter(|pixel| pixel[3] > 0 && pixel[3] <= threshold).count();
-            changes.hard_alpha_pixels += before as u64;
-            changed |= harden_alpha(&mut rgba, threshold);
-        }
-        let before_key = (!self.keys.is_empty()).then(|| rgba.pixels().map(|pixel| pixel[3]).collect::<Vec<_>>());
-        if let Some(bounds) = visible_bounds(&rgba).filter(|_| !self.keys.is_empty()) {
-            // The region is measured once, on the content as it came in: --key-cut shrinks the
-            // visible bounds, and a band recomputed after it would reach past the requested one.
-            let keys = resolve_keys(&rgba, &self.keys, self.key_region);
-            let band = Band::new(bounds, rgba.dimensions(), self.key_region);
-            if let (Some(percent), Some(region)) = (self.key_cut, self.key_region) {
-                changed |= key_cut(&mut rgba, &keys, region, bounds, percent);
+        // With a grid, the palette's own hardening waits: it would change the input the grid is
+        // found in. A snap hardens alpha per cell; after a refusal the image is prepared
+        // again as it would be without the grid, so un-snapped output stays as it was.
+        let deferred = self.hard_alpha.is_none() && self.palette.is_some() && self.pixel_grid.is_some();
+        let input = deferred.then(|| rgba.clone());
+        let (mut rgba, mut changed, mut changes) = self.prepare(rgba, if deferred { None } else { hard_alpha });
+        // After keying, so the removed background is transparent cells; before the palette, which
+        // then maps each cell to one colour, and before trim and resize, which work on cells. A
+        // refusal leaves the image as it is: the caller decides whether that is an error.
+        let mut snapped = false;
+        if let Some(grid) = self.pixel_grid {
+            let found = pixel_grid::detect(&rgba, &grid.options());
+            match &found {
+                Ok(grid) => {
+                    rgba = pixel_grid::snap(&rgba, grid);
+                    changed = true;
+                    snapped = true;
+                }
+                Err(_) => {
+                    if let Some(input) = input {
+                        (rgba, changed, changes) = self.prepare(input, hard_alpha);
+                    }
+                }
             }
-            changed |= key_out(&mut rgba, &keys, &band, self.key_spread);
+            changes.pixel_grid = Some(found);
         }
-        if let Some(before) = before_key {
-            let mask = image::GrayImage::from_fn(rgba.width(), rgba.height(), |x, y| {
-                let removed = before[(u64::from(y) * u64::from(rgba.width()) + u64::from(x)) as usize] > 0 && rgba.get_pixel(x, y)[3] == 0;
-                image::Luma([if removed { 255 } else { 0 }])
-            });
-            changes.keyed_out_pixels = mask.pixels().filter(|pixel| pixel[0] == 255).count() as u64;
-            changes.key_mask = Some(mask);
-        }
-        // At full size, where despeckling only removes noise; resizing comes after.
+        // Before trim and resize. At full size despeckling only removes noise; on snapped cells
+        // it would erase one-cell details (eyes, outlines), so each cell only takes its colour.
         if let Some(fit) = &self.palette {
-            palette::snap(&mut rgba, &fit.colors, fit.clean);
+            if snapped {
+                palette::snap_cells(&mut rgba, &fit.colors, fit.clean);
+            } else {
+                palette::snap(&mut rgba, &fit.colors, fit.clean);
+            }
             changed = true;
         }
         if let Some(padding) = self.trim {
@@ -561,6 +620,38 @@ impl Transform {
             changed |= bleed(&mut rgba);
         }
         Ok(Applied { image: rgba, changed, trim, changes })
+    }
+
+    /// Hard alpha at `hard_alpha`, then keying: the image grid detection and the palette start
+    /// from. Returns it, whether any pixel changed, and what was removed.
+    fn prepare(&self, mut rgba: RgbaImage, hard_alpha: Option<u8>) -> (RgbaImage, bool, Changes) {
+        let mut changed = false;
+        let mut changes = Changes::default();
+        if let Some(threshold) = hard_alpha {
+            let before = rgba.pixels().filter(|pixel| pixel[3] > 0 && pixel[3] <= threshold).count();
+            changes.hard_alpha_pixels += before as u64;
+            changed |= harden_alpha(&mut rgba, threshold);
+        }
+        let before_key = (!self.keys.is_empty()).then(|| rgba.pixels().map(|pixel| pixel[3]).collect::<Vec<_>>());
+        if let Some(bounds) = visible_bounds(&rgba).filter(|_| !self.keys.is_empty()) {
+            // The region is measured once, on the content as it came in: --key-cut shrinks the
+            // visible bounds, and a band recomputed after it would reach past the requested one.
+            let keys = resolve_keys(&rgba, &self.keys, self.key_region);
+            let band = Band::new(bounds, rgba.dimensions(), self.key_region);
+            if let (Some(percent), Some(region)) = (self.key_cut, self.key_region) {
+                changed |= key_cut(&mut rgba, &keys, region, bounds, percent);
+            }
+            changed |= key_out(&mut rgba, &keys, &band, self.key_spread);
+        }
+        if let Some(before) = before_key {
+            let mask = image::GrayImage::from_fn(rgba.width(), rgba.height(), |x, y| {
+                let removed = before[(u64::from(y) * u64::from(rgba.width()) + u64::from(x)) as usize] > 0 && rgba.get_pixel(x, y)[3] == 0;
+                image::Luma([if removed { 255 } else { 0 }])
+            });
+            changes.keyed_out_pixels = mask.pixels().filter(|pixel| pixel[0] == 255).count() as u64;
+            changes.key_mask = Some(mask);
+        }
+        (rgba, changed, changes)
     }
 }
 
@@ -979,6 +1070,198 @@ mod tests {
 
     fn apply(t: Transform, image: RgbaImage) -> Applied {
         t.apply(image, Format::Png, &Encoding::default()).unwrap()
+    }
+
+    /// Pixel art of `cells` random pico-8-ish colours, each cell `cell` (fractional) image pixels
+    /// wide, on a transparent margin of `margin` cells: the shape of upscaled generated sprites.
+    fn upscaled(cells: (u32, u32), cell: f64, margin: u32) -> (RgbaImage, RgbaImage) {
+        const COLOURS: [[u8; 3]; 6] = [[29, 43, 83], [255, 0, 77], [0, 228, 54], [255, 236, 39], [41, 173, 255], [255, 241, 232]];
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let truth = RgbaImage::from_fn(cells.0, cells.1, |x, y| {
+            seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
+            let inside = (margin..cells.0 - margin).contains(&x) && (margin..cells.1 - margin).contains(&y);
+            let c = COLOURS[(seed % COLOURS.len() as u64) as usize];
+            if inside { Rgba([c[0], c[1], c[2], 255]) } else { Rgba([0, 0, 0, 0]) }
+        });
+        let (w, h) = ((f64::from(cells.0) * cell).round() as u32, (f64::from(cells.1) * cell).round() as u32);
+        let image = RgbaImage::from_fn(w, h, |x, y| {
+            let at = |v: u32, n: u32| (((f64::from(v) + 0.5) / cell) as u32).min(n - 1);
+            *truth.get_pixel(at(x, cells.0), at(y, cells.1))
+        });
+        (image, truth)
+    }
+
+    #[test]
+    fn pixel_grid_parses_and_names_auto_and_fractional_sizes() {
+        assert_eq!(PixelGrid::parse("auto").unwrap(), PixelGrid::Auto);
+        assert_eq!(PixelGrid::parse("AUTO").unwrap(), PixelGrid::Auto);
+        assert_eq!(PixelGrid::parse("7.5").unwrap(), PixelGrid::Size(7.5));
+        for (given, name) in [("auto", "auto"), ("7.5", "7.5"), ("8", "8"), ("8.0", "8"), ("1", "1"), ("6.25", "6.25")] {
+            let parsed = PixelGrid::parse(given).unwrap();
+            assert_eq!(parsed.name(), name);
+            assert_eq!(PixelGrid::parse(&parsed.name()).unwrap(), parsed, "{given} round-trips");
+        }
+        for bad in ["", "big", "0", "0.5", "-4", "nan", "inf", "9000", "8px"] {
+            assert!(PixelGrid::parse(bad).unwrap_err().message.contains("--pixel-grid"), "{bad}");
+        }
+        assert_ne!(PixelGrid::Size(7.5), PixelGrid::Auto);
+        assert!(Transform { pixel_grid: Some(PixelGrid::Auto), ..Default::default() }.edits());
+    }
+
+    #[test]
+    fn pixel_grid_snaps_after_keying_and_before_trim_resize_and_palette() {
+        let (image, truth) = upscaled((40, 32), 6.5, 4);
+        assert_eq!(image.dimensions(), (260, 208));
+        // Auto and a fixed size both give one pixel per cell.
+        for grid in [PixelGrid::Auto, PixelGrid::Size(6.5)] {
+            let out = apply(Transform { pixel_grid: Some(grid), no_bleed: true, ..Default::default() }, image.clone());
+            assert!(matches!(out.changes.pixel_grid, Some(Ok(_))), "{grid:?}");
+            assert_eq!(out.image.dimensions(), (40, 32), "{grid:?}");
+            assert_eq!(out.image, truth, "{grid:?}");
+        }
+        // Trim then works on cells (the 4-cell margin goes), and --resize 2x with --nearest copies
+        // whole cells: the trimmed 32x24 cells become 64x48.
+        let t = Transform { pixel_grid: Some(PixelGrid::Auto), trim: Some(0), resize: Some(Resize::parse("64x").unwrap()), nearest: true, no_bleed: true, ..Default::default() };
+        let out = apply(t, image.clone());
+        assert_eq!(out.trim, Some(Rect { x: 4, y: 4, width: 32, height: 24 }), "trim measured in cells");
+        assert_eq!(out.image.dimensions(), (64, 48));
+        for (x, y, pixel) in out.image.enumerate_pixels() {
+            assert_eq!(pixel, truth.get_pixel(4 + x / 2, 4 + y / 2), "({x}, {y})");
+        }
+        // A palette maps each cell to one of its colours: the output has a pixel per cell, each a palette colour.
+        let colors = vec![[0, 0, 0], [255, 0, 77], [0, 228, 54], [255, 255, 255]];
+        let t = Transform { pixel_grid: Some(PixelGrid::Auto), palette: Some(PaletteFit { colors: colors.clone(), clean: false }), ..Default::default() };
+        let out = apply(t, image.clone());
+        assert_eq!(out.image.dimensions(), (40, 32));
+        assert!(out.image.pixels().filter(|p| p[3] > 0).all(|p| colors.contains(&[p[0], p[1], p[2]])));
+        // Keying runs first: a keyed-out background colour becomes transparent cells.
+        let mut boxed = image.clone();
+        for pixel in boxed.pixels_mut() { if pixel[3] == 0 { *pixel = Rgba([0, 0, 255, 255]); } }
+        let t = Transform { keys: vec![Key::Rgb { rgb: [0, 0, 255], tolerance: 8 }], pixel_grid: Some(PixelGrid::Auto), no_bleed: true, ..Default::default() };
+        let out = apply(t, boxed);
+        assert!(matches!(out.changes.pixel_grid, Some(Ok(_))));
+        assert_eq!(out.image.dimensions(), (40, 32));
+        assert_eq!(out.image.get_pixel(0, 0)[3], 0, "the keyed background is a transparent cell");
+    }
+
+    /// The pico-8 palette, whose colours `upscaled` draws from.
+    const PICO8: [[u8; 3]; 16] = [
+        [0x00, 0x00, 0x00], [0x1D, 0x2B, 0x53], [0x7E, 0x25, 0x53], [0x00, 0x87, 0x51], [0xAB, 0x52, 0x36], [0x5F, 0x57, 0x4F], [0xC2, 0xC3, 0xC7], [0xFF, 0xF1, 0xE8],
+        [0xFF, 0x00, 0x4D], [0xFF, 0xA3, 0x00], [0xFF, 0xEC, 0x27], [0x00, 0xE4, 0x36], [0x29, 0xAD, 0xFF], [0x83, 0x76, 0x9C], [0xFF, 0x77, 0xA8], [0xFF, 0xCC, 0xAA],
+    ];
+
+    /// `upscaled` with one-cell details a 3x3 majority would erase: an eye (one dark cell in a
+    /// 3x3 face) and a one-cell outline (a row of five dark cells through a 7x3 field).
+    fn detailed(cells: (u32, u32), cell: f64) -> (RgbaImage, RgbaImage) {
+        let (_, mut truth) = upscaled(cells, cell, 4);
+        let (skin, dark) = (Rgba([0xFF, 0xCC, 0xAA, 255]), Rgba([0x1D, 0x2B, 0x53, 255]));
+        for (x, y) in (6..9).flat_map(|x| (6..9).map(move |y| (x, y))) { truth.put_pixel(x, y, skin); }
+        truth.put_pixel(7, 7, dark);
+        for (x, y) in (14..21).flat_map(|x| (10..13).map(move |y| (x, y))) { truth.put_pixel(x, y, skin); }
+        for x in 15..20 { truth.put_pixel(x, 11, dark); }
+        let (w, h) = ((f64::from(cells.0) * cell).round() as u32, (f64::from(cells.1) * cell).round() as u32);
+        let at = |v: u32, n: u32| (((f64::from(v) + 0.5) / cell) as u32).min(n - 1);
+        (RgbaImage::from_fn(w, h, |x, y| *truth.get_pixel(at(x, cells.0), at(y, cells.1))), truth)
+    }
+
+    #[test]
+    fn pixel_grid_palette_keeps_one_cell_details() {
+        let (image, truth) = detailed((40, 32), 6.5);
+        let colors = PICO8.to_vec();
+        // Precondition: the full-size despeckle erases both details on the snapped cells.
+        let mut despeckled = truth.clone();
+        palette::snap(&mut despeckled, &colors, false);
+        assert_ne!(despeckled.get_pixel(7, 7), truth.get_pixel(7, 7), "the eye would go");
+        assert_ne!(despeckled.get_pixel(17, 11), truth.get_pixel(17, 11), "the outline would go");
+        // Snapped cells keep them, as their palette colour (each truth colour is a pico-8 colour),
+        // with and without --palette-clean, with auto and an explicit size.
+        for grid in [PixelGrid::Auto, PixelGrid::Size(6.5)] {
+            for clean in [false, true] {
+                let t = Transform { pixel_grid: Some(grid), palette: Some(PaletteFit { colors: colors.clone(), clean }), ..Default::default() };
+                let out = apply(t, image.clone());
+                assert!(matches!(out.changes.pixel_grid, Some(Ok(_))), "{grid:?} clean={clean}");
+                assert_eq!(out.image.get_pixel(7, 7).0, [0x1D, 0x2B, 0x53, 255], "{grid:?} clean={clean}: the eye");
+                assert!((15..20).all(|x| out.image.get_pixel(x, 11).0 == [0x1D, 0x2B, 0x53, 255]), "{grid:?} clean={clean}: the outline");
+                assert_eq!(out.image, truth, "{grid:?} clean={clean}: every cell its own palette colour");
+            }
+        }
+    }
+
+    /// `upscaled` art with a soft (anti-aliased) edge: transparent pixels within 3 px of the
+    /// sprite take its colour at falling alpha, as generated sprites have.
+    fn soft_edged() -> RgbaImage {
+        let (image, _) = upscaled((40, 32), 6.5, 4);
+        let (w, h) = image.dimensions();
+        RgbaImage::from_fn(w, h, |x, y| {
+            let own = *image.get_pixel(x, y);
+            if own[3] == 255 { return own; }
+            for (d, alpha) in [(1i64, 170u8), (2, 110), (3, 50)] {
+                for (dx, dy) in [(-d, 0), (d, 0), (0, -d), (0, d), (-d, -d), (d, d), (-d, d), (d, -d)] {
+                    let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+                    if (0..w as i64).contains(&nx) && (0..h as i64).contains(&ny) {
+                        let n = image.get_pixel(nx as u32, ny as u32);
+                        if n[3] == 255 { return Rgba([n[0], n[1], n[2], alpha]); }
+                    }
+                }
+            }
+            own
+        })
+    }
+
+    #[test]
+    fn a_palette_does_not_change_the_grid_it_is_found_in() {
+        let image = soft_edged();
+        let mut hardened = image.clone();
+        harden_alpha(&mut hardened, palette::PALETTE_ALPHA);
+        let colors = PICO8.to_vec();
+        let measured = |g: &pixel_grid::Grid| (g.cells, g.period, g.offset);
+        for grid in [PixelGrid::Auto, PixelGrid::Size(6.5)] {
+            let found = |t: Transform| {
+                let out = apply(t, image.clone());
+                match out.changes.pixel_grid { Some(Ok(g)) => (measured(&g), out.image), other => panic!("{grid:?}: {other:?}") }
+            };
+            let (plain, _) = found(Transform { pixel_grid: Some(grid), no_bleed: true, ..Default::default() });
+            // Precondition: the palette's alpha hardening, run first, would move the grid.
+            assert_ne!(measured(&pixel_grid::detect(&hardened, &grid.options()).unwrap()), plain, "{grid:?}");
+            for clean in [false, true] {
+                let (with_palette, out) = found(Transform { pixel_grid: Some(grid), palette: Some(PaletteFit { colors: colors.clone(), clean }), ..Default::default() });
+                assert_eq!(with_palette, plain, "{grid:?} clean={clean}: same cells, period and offset");
+                assert!(out.pixels().all(|p| p.0 == [0; 4] || p[3] == 255 && colors.contains(&[p[0], p[1], p[2]])), "{grid:?} clean={clean}: hard alpha, palette colours");
+            }
+        }
+        // An explicit --hard-alpha still runs first, grid or not.
+        let explicit = Transform { hard_alpha: Some(palette::PALETTE_ALPHA), pixel_grid: Some(PixelGrid::Auto), palette: Some(PaletteFit { colors, clean: false }), ..Default::default() };
+        let Some(Ok(g)) = apply(explicit, image.clone()).changes.pixel_grid else { panic!("no grid") };
+        assert_eq!(measured(&g), measured(&pixel_grid::detect(&hardened, &PixelGrid::Auto.options()).unwrap()));
+    }
+
+    #[test]
+    fn pixel_grid_refusal_with_a_palette_gives_the_palette_alone_output() {
+        // No grid in a gradient. Its soft alpha, and a keyed corner whose lower half is soft
+        // (keyed out only if keying sees it before hardening), show the hardening runs first, as
+        // without the grid.
+        let image = RgbaImage::from_fn(256, 192, |x, y| if x < 24 && y < 24 { Rgba([0, 0, 255, if y < 12 { 255 } else { 100 }]) } else { Rgba([x as u8, (y * 255 / 191) as u8, ((x + y) / 2) as u8, (40 + y) as u8]) });
+        let palette = Some(PaletteFit { colors: PICO8.to_vec(), clean: false });
+        let keys = vec![Key::Rgb { rgb: [0, 0, 255], tolerance: 8 }];
+        let alone = apply(Transform { keys: keys.clone(), palette: palette.clone(), ..Default::default() }, image.clone());
+        let refused = apply(Transform { keys, pixel_grid: Some(PixelGrid::Auto), palette, ..Default::default() }, image);
+        assert!(matches!(refused.changes.pixel_grid, Some(Err(_))), "a gradient is not pixel art");
+        assert!(alone.changes.hard_alpha_pixels > 0 && alone.changes.keyed_out_pixels > 0, "preconditions: hardening and keying both act");
+        assert_eq!(refused.image, alone.image);
+        assert_eq!((refused.changes.hard_alpha_pixels, refused.changes.keyed_out_pixels), (alone.changes.hard_alpha_pixels, alone.changes.keyed_out_pixels));
+        assert_eq!(refused.changes.key_mask, alone.changes.key_mask);
+        assert!(refused.changed);
+    }
+
+    #[test]
+    fn pixel_grid_refusal_leaves_the_image_and_records_why() {
+        let gradient = RgbaImage::from_fn(256, 192, |x, y| Rgba([x as u8, (y * 255 / 191) as u8, ((x + y) / 2) as u8, 255]));
+        let t = Transform { pixel_grid: Some(PixelGrid::Auto), no_bleed: true, ..Default::default() };
+        let out = apply(t, gradient.clone());
+        let Some(Err(refusal)) = &out.changes.pixel_grid else { panic!("a gradient is not pixel art") };
+        assert!(!refusal.reasons.is_empty());
+        assert_eq!(out.image, gradient);
+        assert!(!out.changed);
     }
 
     #[test]

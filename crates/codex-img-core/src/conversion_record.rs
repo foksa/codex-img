@@ -7,6 +7,7 @@ pub fn build(format: Format, encoding: &Encoding, transform: &Transform) -> Valu
     let mut value = |flag: &str, value: String| { args.push(format!("{flag}={value}")); };
     if let Some(n) = encoding.colors { value("--colors", n.to_string()); }
     if let Some(n) = encoding.quality { value("--output-quality", n.to_string()); }
+    if let Some(grid) = transform.pixel_grid { value("--pixel-grid", grid.name()); }
     if let Some(n) = transform.trim { value("--trim", n.to_string()); }
     if let Some(n) = transform.hard_alpha { value("--hard-alpha", n.to_string()); }
     if let Some(n) = transform.key_cut { value("--key-cut", format!("{n}%")); }
@@ -37,7 +38,7 @@ pub fn build(format: Format, encoding: &Encoding, transform: &Transform) -> Valu
 }
 
 pub fn allowed(argument: &str) -> bool {
-    matches!(argument.split('=').next().unwrap_or_default(), "--colors" | "--output-quality" | "--trim" | "--hard-alpha" | "--key-cut" | "--key-spread" | "--key-region" | "--trim-density" | "--resize" | "--fit" | "--key" | "--palette" | "--dither" | "--lossless" | "--no-bleed" | "--no-enlarge" | "--nearest" | "--palette-clean")
+    matches!(argument.split('=').next().unwrap_or_default(), "--colors" | "--output-quality" | "--trim" | "--hard-alpha" | "--key-cut" | "--key-spread" | "--pixel-grid" | "--key-region" | "--trim-density" | "--resize" | "--fit" | "--key" | "--palette" | "--dither" | "--lossless" | "--no-bleed" | "--no-enlarge" | "--nearest" | "--palette-clean")
 }
 
 
@@ -87,6 +88,7 @@ pub fn batch_spec(spec: &std::path::Path, key: &str, expected: &str, settings: &
         "trim_density",
         "palette",
         "palette_clean",
+        "pixel_grid",
     ];
     // Null overrides defaults too; leaving a field absent would silently inherit a tool
     // setting the preview did not use. Generation fields and comments stay untouched.
@@ -109,6 +111,13 @@ pub fn batch_spec(spec: &std::path::Path, key: &str, expected: &str, settings: &
             Value::Bool(true)
         } else if key == "palette" {
             Value::String(palette_for_spec(value, spec))
+        } else if key == "pixel_grid" {
+            // A batch spec takes "auto" or a number.
+            match (value.parse::<u64>(), value.parse::<f64>().ok().and_then(serde_json::Number::from_f64)) {
+                (Ok(whole), _) => Value::from(whole),
+                (_, Some(number)) => Value::Number(number),
+                _ => Value::String(value.into()),
+            }
         } else {
             Value::String(value.into())
         };
@@ -146,7 +155,8 @@ mod tests {
         // An absolute root on every platform: "/project" has no drive on Windows.
         let project = std::path::Path::new(if cfg!(windows) { r"C:\project" } else { "/project" });
         let palette = format!("--palette={}", project.join("refs/palette.png").display());
-        let value: Value = serde_json::from_str(&batch_spec(&project.join("specs/assets.json"), "hero", original, &["--format=png".into(), palette, "--key=blue".into(),"--key=cyan".into()]).unwrap()).unwrap();
+        let value: Value = serde_json::from_str(&batch_spec(&project.join("specs/assets.json"), "hero", original, &["--format=png".into(), palette, "--key=blue".into(),"--key=cyan".into(), "--pixel-grid=7.5".into()]).unwrap()).unwrap();
+        assert_eq!(value["assets"]["hero"]["pixel_grid"], json!(7.5));
         assert_eq!(value["assets"]["hero"]["palette"], "../refs/palette.png");
         assert!(value["assets"]["hero"]["trim"].is_null());
         assert_eq!(value["assets"]["hero"]["key"], json!(["blue","cyan"]));

@@ -557,6 +557,25 @@
             "null"
           ],
           "description": "Copy pixels for whole-number upscaling of pixel art; requires resize or max."
+        },
+        "pixel_grid": {
+          "anyOf": [
+            {
+              "const": "auto"
+            },
+            {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 8192
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ],
+          "description": "Snap pixel art to one pixel per cell of its grid: \"auto\" finds the cell size (and leaves non-pixel art un-snapped, with a warning), a number is the cell size in image pixels (may be fractional, e.g. 7.5). Runs after key, before trim, resize and palette."
         }
       }
     }
@@ -1094,6 +1113,25 @@
             "null"
           ],
           "description": "Copy pixels for whole-number upscaling of pixel art; requires resize or max."
+        },
+        "pixel_grid": {
+          "anyOf": [
+            {
+              "const": "auto"
+            },
+            {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 8192
+            },
+            {
+              "type": "null"
+            },
+            {
+              "const": false
+            }
+          ],
+          "description": "Snap pixel art to one pixel per cell of its grid: \"auto\" finds the cell size (and leaves non-pixel art un-snapped, with a warning), a number is the cell size in image pixels (may be fractional, e.g. 7.5). Runs after key, before trim, resize and palette."
         }
       }
     },

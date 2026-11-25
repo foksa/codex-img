@@ -372,6 +372,51 @@ mod tests {
         assert!(refine::prepare(&changed, &dir).unwrap_err().message.contains("changed on disk"));
     }
     #[test]
+    fn pixel_grid_snaps_generated_art_and_rerun_and_refine_keep_it() {
+        use crate::convert::tests::{gradient, pixel_art, png, response_with};
+        let dir = auth::tests::temp_dir("generate-pixel-grid").canonicalize().unwrap();
+        let (art, _) = pixel_art((48, 36), 7.5);
+        let first = dir.join("knight.png");
+        let (backend, _) = serve(vec![(200, "application/json", response_with(&png(&art)))]);
+        assert_eq!(execute(options(&first, &["--pixel-grid", "auto", "--manifest"]), backend, &|| Ok(creds()), &dir).unwrap(), 0);
+        assert_eq!(image::open(&first).unwrap().to_rgba8().dimensions(), (48, 36), "one pixel per cell");
+        assert_eq!(image::open(dir.join("knight.raw.png")).unwrap().to_rgba8().dimensions(), (360, 270), "the generated image is kept");
+        let note = manifest::read(&manifest::path_for(&first)).unwrap();
+        assert!(note["conversion"]["args"].as_array().unwrap().contains(&json!("--pixel-grid=auto")), "{}", note["conversion"]);
+        let rerun = rerun::Options { image: first.display().to_string(), output: Some(dir.join("again.png").display().to_string()), count: 1, anyway: false, json: false, quiet: true };
+        assert_eq!(rerun::prepare(&rerun, &dir).unwrap().transform.pixel_grid, Some(transform::PixelGrid::Auto));
+        let refine = refine::Options { image: first.display().to_string(), change: Some("Blue cape".into()), from_comment: false, expected: None, output: Some(dir.join("blue.png").display().to_string()), json: false, quiet: true, batch: None, key: None, no_wait: false };
+        assert_eq!(refine::prepare(&refine, &dir).unwrap().transform.pixel_grid, Some(transform::PixelGrid::Auto));
+        // A fixed size is recorded as given.
+        let sized = dir.join("sized.png");
+        let (backend, _) = serve(vec![(200, "application/json", response_with(&png(&art)))]);
+        assert_eq!(execute(options(&sized, &["--pixel-grid=7.5", "--manifest"]), backend, &|| Ok(creds()), &dir).unwrap(), 0);
+        assert_eq!(image::open(&sized).unwrap().to_rgba8().dimensions(), (48, 36));
+        let rerun = rerun::Options { image: sized.display().to_string(), ..rerun };
+        assert_eq!(rerun::prepare(&rerun, &dir).unwrap().transform.pixel_grid, Some(transform::PixelGrid::Size(7.5)));
+        // No grid: the generated image is saved un-snapped (the warning is save_image's) and the run succeeds.
+        let sky = dir.join("sky.png");
+        let (backend, _) = serve(vec![(200, "application/json", response_with(&png(&gradient(320, 240))))]);
+        assert_eq!(execute(options(&sky, &["--pixel-grid", "auto"]), backend, &|| Ok(creds()), &dir).unwrap(), 0);
+        assert_eq!(image::open(&sky).unwrap().to_rgba8().dimensions(), (320, 240));
+    }
+
+    #[test]
+    fn generated_pixel_art_with_a_palette_keeps_one_cell_details() {
+        // Through conversion::process, as generate, rerun and refine save.
+        use crate::convert::tests::{detailed_pixel_art, png, response_with};
+        let dir = auth::tests::temp_dir("generate-pixel-grid-palette").canonicalize().unwrap();
+        let (art, truth) = detailed_pixel_art((48, 36), 7.5);
+        let path = dir.join("face.png");
+        let (backend, _) = serve(vec![(200, "application/json", response_with(&png(&art)))]);
+        assert_eq!(execute(options(&path, &["--pixel-grid", "auto", "--palette", "pico-8"]), backend, &|| Ok(creds()), &dir).unwrap(), 0);
+        let written = image::open(&path).unwrap().to_rgba8();
+        assert_eq!(written.get_pixel(7, 7).0, [0x1D, 0x2B, 0x53, 255], "the eye");
+        assert!((15..20).all(|x| written.get_pixel(x, 11).0 == [0x1D, 0x2B, 0x53, 255]), "the outline");
+        assert_eq!(written, truth, "every cell its own pico-8 colour");
+    }
+
+    #[test]
     fn refine_uses_current_named_presets_and_keeps_names_for_later_edits() {
         let dir = auth::tests::temp_dir("refine-current").canonicalize().unwrap();
         let marker = dir.join("codex-img.json"); let reference = dir.join("ink.png");

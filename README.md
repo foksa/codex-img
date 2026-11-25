@@ -87,7 +87,7 @@ codex-img status --json                                     # login check, uses 
 | `-b, --background` | `transparent` \| `opaque` \| `auto` |
 | `--via-responses` | Fallback route: a routing model calls the `image_generation` tool through the Responses API. The prompt may be rewritten and `--size` is ignored |
 | `-m, --model` | Routing model for `--via-responses` (default: the first model your Codex catalog lists) |
-| `--trim`, `--resize`, `--fit`, `--hard-alpha`, `--no-enlarge`, `--nearest`, `--no-bleed` | Trim, resize, hard alpha and edge bleed before saving, as in [`convert`](#converting-existing-images). With `--trim`, `--resize` or `--hard-alpha` the untouched original is also kept as `<name>.raw.<ext>`, since quota was spent on it and there's no seed to regenerate it |
+| `--trim`, `--resize`, `--fit`, `--hard-alpha`, `--no-enlarge`, `--nearest`, `--no-bleed`, `--pixel-grid` | Trim, resize, hard alpha, edge bleed and pixel-grid snapping before saving, as in [`convert`](#converting-existing-images). With `--trim`, `--resize`, `--hard-alpha` or `--pixel-grid` the untouched original is also kept as `<name>.raw.<ext>`, since quota was spent on it and there's no seed to regenerate it. When `--pixel-grid auto` finds no grid, the image is saved un-snapped with a warning, rather than lost |
 | `-n, --count` | Images to generate in parallel (1–10). Each one is a separate request |
 | `--json` | Prints one JSON line per image: path, size, `submittedPrompt` (when presets, labels or `--aspect` changed the prompt), quality (the backend's), `outputQuality` (the JPEG/WebP quality codex-img applied, when it encoded lossily), revised prompt, usage, duration. After `--trim`, `--resize` or `--hard-alpha`: `size` is the saved file's, plus `rawSize` (the backend's), `rawPath` and `trim` |
 | `--quiet` | No progress output on stderr |
@@ -321,7 +321,7 @@ codex-img presets add palette harbour --from lospec-swatch.png                  
 - **On generation,** it adds the hex codes to the prompt ("Use only these 6 colours, exactly, and no others: #2B1D14, …").
 - **After generation, and in `convert`,** it snaps every colour to the nearest palette colour, so the file has exactly those colours:
   - Alpha is hardened at 127 unless `--hard-alpha` says otherwise.
-  - Stray pixels are cleaned at full size.
+  - Stray pixels are cleaned at full size. After a `--pixel-grid` snap they aren't: one pixel per cell is the art, so each cell takes its nearest palette colour, and the hardening waits until the grid is found (see [Pixel art](#pixel-art)).
   - Colours are snapped again after `--resize`, which blends neighbours.
   - PNG output is a palette PNG. WebP needs `--lossless`, and JPEG and `-c` are refused.
 
@@ -354,7 +354,7 @@ The values come from [Lospec](https://lospec.com/palette-list). Each can be over
 
 In a batch spec, use the `palette` and `palette_clean` fields.
 
-`--palette-clean` is for art that wasn't generated with the palette. It reduces the image to 32 colours, matches hue before lightness, then despeckles. Without it, shading that falls between palette colours flickers between them as speckles and streaks of another hue. It changes images that were prompted with the palette more than it needs to (pixel art especially), so it's off by default.
+`--palette-clean` is for art that wasn't generated with the palette. It reduces the image to 32 colours, matches hue before lightness, then despeckles. On cells snapped with `--pixel-grid` it only matches hue first. Without it, shading that falls between palette colours flickers between them as speckles and streaks of another hue. It changes images that were prompted with the palette more than it needs to (pixel art especially), so it's off by default.
 
 ### Converting existing images
 
@@ -384,6 +384,7 @@ Without `-o`, output goes next to the input as `<name>.<ext>`, or `<name>.min.<e
 | `--fit MODE` | For `WxH` with another aspect ratio: `inside` (default; fits in the box, so one side may be smaller), `cover` (exactly WxH, crops the centre), `contain` (exactly WxH, pads with transparency, or white in JPEG), `fill` (stretches) |
 | `--hard-alpha[=N]` | Make every pixel fully solid (alpha above `N`, default 16) or fully transparent. Runs before `--trim`, and again at 50% after `--resize` so resampled edges stay hard. For pixel art and other crisp sprites. It also fixes the backend's "solid" pixels, which come back at alpha 250–254 |
 | `--nearest` | Copy source pixels instead of smoothing, with `--resize`. For whole-number upscaling of pixel art |
+| `--pixel-grid auto\|SIZE` | Reduce pixel art drawn with several image pixels per art pixel to one pixel per cell (see [Pixel art](#pixel-art) below). `auto` finds the cell size (use it on pixel art; it refuses paintings and photos, but can pass flat illustrations); `SIZE` (e.g. `8` or `7.5`) is the cell width in image pixels. Runs after `--key`, before `--palette`, `--trim` and `--resize` |
 | `--no-enlarge` | Only shrink: the scale never goes above 1, so `--resize` leaves smaller images at their size. `cover` still crops to the box's aspect ratio, `contain` pads the unscaled image, `fill` caps each side on its own |
 | `--key COLOUR` | Make an unwanted background transparent, such as the sea painted under a boat or the sky behind a building: pixels of this colour that connect to the transparent background or the image's border. It's a flood fill, so matching paint enclosed by the object's outline (a blue stripe on a hull) survives, and small islands the removed background leaves behind, like foam and spray, go with it. `COLOUR` is `auto[:TOL]`, a name (`red`, `orange` for browns too, `yellow`, `green`, `cyan`, `blue`, `purple`, `pink`, `white`, `gray`, `black`), or `#rrggbb[:TOL]`. `auto` uses the background's own colours, sampled from the outer 5% along the `--key-region` edges, or all four edges without a region. `TOL` is per channel, default 32. Repeatable. Runs after `--hard-alpha` and before `--trim` |
 | `--key-region BANDS` | Only key out within bands along edges of the visible content, each a share of its height or width: `bottom:30%` (ground under a sprite), `top:80%` (sky behind a building), `top:40%,left:15%`, or `all:20%`. Matching colours elsewhere, like a sky-blue window, stay safe |
@@ -394,7 +395,26 @@ Without `-o`, output goes next to the input as `<name>.<ext>`, or `<name>.min.<e
 | `--effort N` | WebP encoder effort, 0 (fastest) to 9 (smallest), like `cwebp -z` (default 6). At 9, lossless WebP is about 5–25% smaller and takes several times longer. An explicit effort re-encodes lossless WebP input (lossy input is never re-encoded for it) |
 | `--force` | Replace existing output files (never an input). The file is written to a temporary name and renamed into place, and one that already holds the same bytes is left untouched (`--json` reports `unchanged: true`) |
 
-Use `--nearest` for whole-number upscaling of pixel art, such as a 32×32 sprite to 96×96. Downscaling generated pixel art with it gives uneven pixels, because the art is not on a true grid. Grid detection is a later feature. Batch assets and defaults accept `nearest: true`; it is a flag, with no filter selection.
+#### Pixel art
+
+Generated "pixel art" is not on a true grid. Each art pixel is several image pixels wide (often a fractional 5–9), the cells are unevenly placed, and their edges are soft. Downscaling it with `--resize` and `--nearest` gives uneven pixels. `--pixel-grid` finds the real cell grid and writes one pixel per cell instead: each cell's dominant colour, with alpha fully solid or fully clear.
+
+```sh
+codex-img convert knight.png --pixel-grid auto -o knight-1x.png --json          # 1 pixel per cell
+codex-img convert knight.png --pixel-grid auto --palette pico-8 -o knight-1x.png  # then 1 palette colour per cell
+codex-img convert knight.png --pixel-grid 7.5 --trim -o knight-1x.png            # a known cell size
+codex-img convert knight.png --pixel-grid auto --trim --resize 256x --nearest -o knight-4x.png  # crisp preview
+```
+
+- **`auto`** measures the edge profile of each axis, tries the candidate cell sizes (4 px up to a sixteenth of the short side), fits the cell boundaries to the drawn edges, and keeps the best fit. It refuses when the edges don't line up with a grid (edge capture below 0.17), when the cells aren't flat colours (purity below 0.85), or when there are fewer than 16 cells on the short side. Paintings, watercolours, photos and smooth renders refuse; flat vector art and JPEG block artefacts can still pass, so check the result.
+- **A size** such as `8` or `7.5` (fractional sizes are fine) skips the search and never refuses for confidence. Use it when `auto` refuses art you know is pixel art, or picks a multiple of the real size.
+- **A refusal** is an error in `convert`: exit code 1, nothing written, and the message names the measurements (capture, purity, cells) and suggests passing a size. When generating, in `batch` too, the image cost quota, so it is kept un-snapped and the line carries a warning.
+- **Order:** background removal (`--key`) runs first, so the removed background becomes transparent cells. Then the snap, then `--palette`, which maps each cell to its nearest palette colour, then `--trim` (on cells) and `--resize`. The `trim` rectangle in `--json` is then in cells, not input pixels.
+- **With `--palette`:** the grid is found in the image as keyed, before the palette's alpha hardening, so adding a palette doesn't change the grid (the snap makes each cell solid or clear itself). Each cell keeps its own palette colour: there is no full-size despeckle, so one-cell eyes, outlines and highlights stay, with `--palette-clean` too (it still matches hue first). When `auto` finds no grid, the palette works as it does without `--pixel-grid`.
+- **`--json`** has `pixelGrid`: `period` and `offset` per axis in image pixels, `mode` (`regular` or `elastic`), `cells` `[columns, rows]`, `capture`, `purity` and `coherence`. After a refusal it is `{refused: true, reasons, measurements}`, where `measurements` are those of the best grid found (or `null`), and `convert --json` prints that object on a line with `input` and `error`.
+- **Previews:** `--resize` takes pixel sizes, not factors. For a crisp whole-number upscale, add `--nearest` and give a width that is a multiple of the snapped width: with `--json` reporting 32 cells across after `--trim`, `--resize 128x --nearest` is exactly 4× per pixel. A width that isn't a multiple gives uneven pixels again. The resize runs after `--palette`, and `--nearest` only copies pixels, so the palette colours stay exact.
+
+Use `--nearest` on its own for whole-number upscaling of art that already is one pixel per cell, such as a 32×32 sprite to 96×96. Batch assets and defaults accept `nearest: true` (a flag, with no filter selection) and `pixel_grid: "auto"` or a number.
 
 Saved conversions appear in the run feed, linked to the source. Temporary previews can use `CODEX_IMG_EVENTS=off`.
 
@@ -541,7 +561,7 @@ codex-img batch art/assets.json --convert-only     # no login, no quota
 - **Presets:** `view`, `style` and `character` name presets, as the options of the same names do; `style` and `character` can be lists. `style_ref`, `character_ref` and `composition_ref` are reference images with a role, relative to the spec. The spec can define its own presets under top-level `views`, `styles` and `characters`, which win over the project's and global ones. The top-level `style` is still plain text appended to every prompt; an asset's `style` names a preset.
 - **Manifests:** each generated raw image gets `<key>.png.json` beside it, with the prompt sent, the presets, the inputs with fingerprints, and what the backend reported. When the spec or an input has changed since, the asset's `skip` line says so (`changed: true` with `--json`). The asset is never regenerated on its own, because that would spend quota; use `--reroll <key>` to keep its history.
 - **Generation fields:** `prompt`, `aspect`, `size`, `quality`, `background`, `reference` (other keys whose raw images are passed as `-i`; they're generated first) and `images` (other `-i` files). `aspect` leads the prompt, ahead of the `style`, and a frame more than 2% off it is reported as a warning on the asset's line, as is a reported quality other than the asset's `quality` (unless it is `auto`). `publish: false` generates an asset without converting it, for references.
-- **Conversion fields** are the `convert` options with underscores: `format`, `colors`, `dither`, `output_quality`, `lossless`, `trim`, `hard_alpha`, `resize`, `fit`, `no_enlarge`, `nearest`, `no_bleed`, `key`, `key_region`, `key_spread`, `key_cut` and `trim_density`. `max: [W, H]` is short for `resize` with `no_enlarge`.
+- **Conversion fields** are the `convert` options with underscores: `format`, `colors`, `dither`, `output_quality`, `lossless`, `trim`, `hard_alpha`, `resize`, `fit`, `no_enlarge`, `nearest`, `no_bleed`, `key`, `key_region`, `key_spread`, `key_cut`, `trim_density` and `pixel_grid` (`"auto"` or a cell size such as `7.5`; when `auto` finds no grid, the output is converted un-snapped and the `convert` line warns). `max: [W, H]` is short for `resize` with `no_enlarge`.
 - **Validation:** the whole spec is checked before anything runs. An unknown field, a missing reference or a reference loop is an error that names the asset.
 - **Output:** one line per asset and step (`ok`, `skip`, `same`, `FAILED`), or one JSON object each with `--json`. After a login or quota error, no more images are started. The exit code is the worst failure's, so a run with any failure exits non-zero.
 - **Options:** `-j N` sets how many images are generated at the same time (default 4, max 10), and `--generate-only` skips the conversion step.

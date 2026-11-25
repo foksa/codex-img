@@ -6,6 +6,7 @@ Sprites, consistent sets, camera angles, characters and palettes. All commands h
 - [Presets: check what the project defines](#presets-check-what-the-project-defines)
 - [Camera angle: `--view`](#camera-angle---view)
 - [Transparent sprites](#transparent-sprites)
+- [Pixel art: `--pixel-grid`](#pixel-art---pixel-grid)
 - [Characters across images](#characters-across-images)
 - [Palettes](#palettes)
 - [Many assets: `batch`](#many-assets-batch)
@@ -70,6 +71,26 @@ A full pixel-art sprite step from a raw image:
 codex-img convert raw/car.png --hard-alpha --trim --resize 400x300 --no-enlarge -c 160 -o assets/
 ```
 
+## Pixel art: `--pixel-grid`
+
+Generated "pixel art" is not on a true grid: each art pixel is several image pixels wide (often a fractional 5–9), unevenly placed, with soft edges. `--pixel-grid` finds the real grid and writes one pixel per cell (the cell's dominant colour, alpha fully solid or clear). Use it whenever the user wants pixel art at its real resolution, a sprite for an engine, or a palette that maps one colour per art pixel.
+
+```sh
+codex-img convert raw/knight.png --pixel-grid auto --trim -o assets/knight.png --json    # check pixelGrid.cells
+codex-img convert raw/knight.png --pixel-grid auto --palette pico-8 -o assets/knight.png  # one palette colour per cell
+codex-img convert raw/knight.png --pixel-grid 7.5 -o assets/knight.png                   # known cell size
+codex-img convert assets/knight.png --resize 128x --nearest -o /tmp/knight-4x.png         # preview: 32 cells x 4
+codex-img "a knight sprite, 16-bit pixel art" -b transparent --pixel-grid auto --trim -o knight.png
+```
+
+- **`auto`** finds the cell size and refuses what isn't pixel art: paintings, watercolours, photos, smooth renders. Flat vector art and JPEG block artefacts can still pass, so look at the result (`sheet`).
+- **A refusal** in `convert` exits 1 and writes nothing; the message gives capture, purity and cells. If you know it is pixel art, pass the cell size instead of `auto`, e.g. `--pixel-grid 8` (read it off `pixelGrid.period` or measure one art pixel).
+- **When generating** (and in `batch`, as `"pixel_grid": "auto"` or a number), a refusal keeps the image un-snapped with a warning, because quota was spent. The untouched original is kept as `.raw.png` either way.
+- **Order:** `--key` first (removed background becomes transparent cells), then the snap, then `--palette`, then `--trim` and `--resize`.
+- **With `--palette`:** adding it doesn't change the grid, and each cell takes its nearest palette colour with no despeckle, so one-cell eyes and outlines stay (with `--palette-clean` too). If `auto` finds no grid, the palette works as without `--pixel-grid`.
+- **Upscaled previews:** `--resize` takes pixels, not a factor. Use `--nearest` with a width that is a whole multiple of the snapped width (`pixelGrid.cells[0]`, or the trimmed size), or the pixels come out uneven again. The resize runs after `--palette` and `--nearest` only copies pixels, so the palette colours stay exact.
+- **Don't** use `--resize` with `--nearest` to *shrink* generated pixel art instead: the cells are uneven, so that gives uneven pixels.
+
 ## Characters across images
 
 1. Make one clean anchor image of the character.
@@ -96,7 +117,7 @@ codex-img presets add palette harbour --from lospec-swatch.png      # or --text 
 - **What a palette can be:** hex codes, a `.gpl` or `.hex` file, a swatch image, or a preset. Built in are `pico-8`, `game-boy`, `nes`, `c64`, `zx-spectrum`, `cga`, `ega`, `ega-64`, `sweetie-16`, `dawnbringer-16`, `dawnbringer-32`, `endesga-32`, `resurrect-64` and `aap-64`.
 - **What `--palette` does:**
   - It adds the hex codes to the prompt. With 4–16 colours, 81–88% of pixels came back close to the palette; a palette's name alone got 8%.
-  - It then snaps every colour to the palette. Alpha is hardened, and the colours are snapped again after `--resize`.
+  - It then snaps every colour to the palette. Alpha is hardened, and the colours are snapped again after `--resize`. After `--pixel-grid` each cell just takes its nearest palette colour (no despeckle).
   - PNG output is a palette PNG of exactly those colours. The original is kept as `.raw.png`.
 - **Limits:** PNG or `--lossless` WebP only, and not with `-c`.
 - **`--palette-clean`** is for art that wasn't made with the palette. Without it, shading between palette colours turns into speckles and streaks of another hue. Don't use it on art generated with `--palette`: it changes more than it needs to, pixel art especially.
@@ -205,7 +226,7 @@ definitions and drift warnings. It replaces the raw through history, then applie
 batch conversion settings. Re-roll is how to adopt the current spec’s generation settings.
 From-comment edits clear the asset note only after success, preserving changed notes.
 
-The batch conversion flag `nearest: true` copies source pixels when resizing. Use it for whole-number upscaling of pixel art; generated pixel art is not on a true grid, so downscaling it this way gives uneven pixels. Grid detection is deferred.
+The batch conversion flag `nearest: true` copies source pixels when resizing. Use it for whole-number upscaling of pixel art; generated pixel art is not on a true grid, so downscaling it this way gives uneven pixels. Use `pixel_grid: "auto"` (or a cell size) to reduce it to one pixel per cell first; see [Pixel art](#pixel-art---pixel-grid).
 
 After reviewing a batch dry-run plan, use `--expect-images N` to stop before quota if the number of generations (including missing dependencies) changed. This guard belongs to the CLI, so the app’s cost remains enforced when the child starts.
 

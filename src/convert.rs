@@ -93,6 +93,22 @@ Options:
                             off whole rows (or columns) while at least f (default
                             0.4) of their visible pixels match the key: below a
                             boat's waterline, or above a roofline. Needs --key-region
+      --pixel-grid <auto|size>
+                            Pixel art drawn with several image pixels per art pixel,
+                            unevenly and with soft edges (generated or resampled):
+                            find its cell grid and write one pixel per cell, each
+                            the cell's dominant colour, alpha solid or clear. auto
+                            (for pixel art) finds the cell size and refuses
+                            paintings, photos and smooth renders: exit 1 and
+                            nothing written. Flat illustrations can pass, so
+                            check the result. A size (8, or fractional like 7.5) is
+                            the cell width in image pixels: no search, no refusal.
+                            Runs after --key, before --palette (which then maps
+                            each cell to its nearest palette colour, without the
+                            full-size cleanup), --trim and --resize; the --json
+                            trim is then in cells. For a crisp preview, upscale by
+                            a whole number with --resize <W>x --nearest, W a
+                            multiple of the cell count: the palette stays exact
       --trim-density [edges:]f
                             With --trim, also drop sparse rows at the bottom: those
                             with fewer visible pixels than f (e.g. 0.15) of the
@@ -105,9 +121,11 @@ Options:
                             (built in: pico-8, game-boy, nes, c64, sweetie-16,
                             resurrect-64 and more; `codex-img presets` lists them).
                             Alpha is hardened (at 127 unless --hard-alpha says
-                            otherwise), stray pixels are cleaned at full size, and
-                            the colours are snapped again after --resize, so the
-                            output has exactly the palette's colours. PNG output
+                            otherwise; with --pixel-grid the snap does it), stray
+                            pixels are cleaned at full size (not on snapped
+                            cells), and the colours are snapped again after
+                            --resize, so the output has exactly the palette's
+                            colours. PNG output
                             is a palette PNG; WebP needs --lossless
       --palette-clean       Stronger cleanup, for art not generated with the
                             palette: reduce to 32 colours, then match hue before
@@ -142,7 +160,9 @@ Examples:
   codex-img convert raw/*.png --trim -c 160 -o public/ --force
   codex-img convert -r maps/units/ -f webp --lossless -o web/units/ --json
   codex-img convert boat.png --hard-alpha --key auto --key-region bottom:30% --key-cut --trim --trim-density 0.15
-  codex-img convert house.png --key auto --key-region top:80% --key-spread 24 --trim"#
+  codex-img convert house.png --key auto --key-region top:80% --key-spread 24 --trim
+  codex-img convert knight.png --pixel-grid auto --trim -o knight-1x.png --json
+  codex-img convert knight.png --pixel-grid 7.5 --palette pico-8 -o knight-1x.png"#
 }
 
 pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
@@ -183,6 +203,7 @@ pub fn parse(args: &[String]) -> Result<Option<ConvertOptions>> {
             "--key-region" => opts.transform.key_region = Some(transform::Region::parse(&value()?)?),
             "--key-spread" => opts.transform.key_spread = Some(transform::parse_key_spread(&value()?)?),
             "--key-cut" => opts.transform.key_cut = Some(inline.as_deref().map(transform::parse_key_cut).transpose()?.unwrap_or(transform::KEY_CUT)),
+            "--pixel-grid" => opts.transform.pixel_grid = Some(transform::PixelGrid::parse(&value()?)?),
             "--trim-density" => opts.transform.trim_density = Some(transform::Density::parse(&value()?)?),
             "--hard-alpha" => {
                 opts.transform.hard_alpha =
@@ -366,7 +387,24 @@ pub(crate) fn walk(dir: &Path, files: &mut Vec<PathBuf>, others: &mut Vec<PathBu
     Ok(())
 }
 
+/// A failed conversion, with the JSON line --json prints for it (a --pixel-grid refusal).
+struct Failed {
+    error: Error,
+    json: Option<serde_json::Value>,
+}
+
+impl From<Error> for Failed {
+    fn from(error: Error) -> Self {
+        Failed { error, json: None }
+    }
+}
+
+#[cfg(test)]
 fn convert_one(input: &Path, output: Option<&str>, opts: &ConvertOptions) -> Result<serde_json::Value> {
+    convert_file(input, output, opts).map_err(|failed| failed.error)
+}
+
+fn convert_file(input: &Path, output: Option<&str>, opts: &ConvertOptions) -> std::result::Result<serde_json::Value, Failed> {
     let started = Instant::now();
     let (bytes, actual) = read_image(input)?;
     let format = opts.format.unwrap_or(actual);
@@ -375,17 +413,24 @@ fn convert_one(input: &Path, output: Option<&str>, opts: &ConvertOptions) -> Res
     opts.transform.check_output(Some(format), &opts.encoding).map_err(|e| Error::usage(format!("{}: {}", input.display(), e.message)))?;
     let target = target_path(input, output, format);
     if same_file(&target, input) {
-        return Err(Error::usage(format!("Output would overwrite the input {}; choose another -o.", input.display())));
+        return Err(Error::usage(format!("Output would overwrite the input {}; choose another -o.", input.display())).into());
     }
     if !opts.force && target.exists() {
-        return Err(Error::other(format!("{} already exists; add --force to replace it.", target.display())));
+        return Err(Error::other(format!("{} already exists; add --force to replace it.", target.display())).into());
     }
     if let Some(mask) = &opts.mask_out {
         let mask = Path::new(mask);
-        if same_file(mask, input) || same_file(mask, &target) { return Err(Error::usage("The mask must be separate from the input and output.")); }
-        if !opts.force && mask.exists() { return Err(Error::other(format!("{} already exists.", mask.display()))); }
+        if same_file(mask, input) || same_file(mask, &target) { return Err(Error::usage("The mask must be separate from the input and output.").into()); }
+        if !opts.force && mask.exists() { return Err(Error::other(format!("{} already exists.", mask.display())).into()); }
     }
-    let converted = cli::save_converted(&bytes, format, &opts.encoding, &opts.transform, &target, opts.force)?;
+    let processed = codex_img_core::conversion::prepare(&bytes, format, &opts.encoding, &opts.transform).map_err(Error::from)?;
+    // Unlike generated images, a local file without a grid is an error: nothing is written.
+    if let Some(refusal) = codex_img_core::conversion::refusal(&processed.changes) {
+        let error = Error::other(format!("{}: {}", input.display(), codex_img_core::conversion::refusal_message(refusal)));
+        let json = json!({"input": input.display().to_string(), "error": error.message, "pixelGrid": processed.changes.pixel_grid.as_ref().map(codex_img_core::conversion::pixel_grid_json)});
+        return Err(Failed { error, json: Some(json) });
+    }
+    let converted = codex_img_core::conversion::write_converted(processed, &target, opts.force).map_err(Error::from)?;
     let written = std::fs::metadata(&converted.path).map(|m| m.len()).unwrap_or_default();
     let size = |(w, h): (u32, u32)| format!("{w}x{h}");
     let mut info = json!({
@@ -401,6 +446,7 @@ fn convert_one(input: &Path, output: Option<&str>, opts: &ConvertOptions) -> Res
     info["hardAlphaPixels"] = json!(converted.changes.hard_alpha_pixels);
     info["keyedOutPixels"] = json!(converted.changes.keyed_out_pixels);
     if let Some(colors) = converted.changes.palette_colors { info["paletteColors"] = json!(colors); }
+    if let Some(found) = &converted.changes.pixel_grid { info["pixelGrid"] = codex_img_core::conversion::pixel_grid_json(found); }
     if let Some(path) = &opts.mask_out {
         let mask = converted.changes.key_mask.as_ref().ok_or_else(|| Error::other("The key mask was not produced."))?;
         let mut bytes = std::io::Cursor::new(Vec::new());
@@ -440,7 +486,7 @@ pub fn run(opts: &ConvertOptions) -> i32 {
     for Planned { input, output } in &planned {
         let input = input.as_path();
         let job = run.job(json!({"prompt":"Local conversion","parent":crate::events::absolute(input),"inputs":[{"path":crate::events::absolute(input),"role":"input"}],"request":{}}));
-        match convert_one(input, output.as_deref(), opts) {
+        match convert_file(input, output.as_deref(), opts) {
             Ok(info) => {
                 job.done(json!({"path":crate::events::absolute(Path::new(info["path"].as_str().unwrap())),"rawPath":crate::events::absolute(input),"durationMs":info["durationMs"],"size":info["size"]}));
                 let (from, to) = (info["inputBytes"].as_u64().unwrap_or(0), info["bytes"].as_u64().unwrap_or(0));
@@ -455,8 +501,11 @@ pub fn run(opts: &ConvertOptions) -> i32 {
                     eprintln!("{} -> {} ({} KB -> {} KB{note})", input.display(), info["path"].as_str().unwrap_or_default(), from / 1024, to / 1024);
                 }
             }
-            Err(error) => {
+            Err(Failed { error, json }) => {
                 job.failed(&error);
+                if let Some(line) = json.filter(|_| opts.json) {
+                    println!("{line}");
+                }
                 eprintln!("codex-img: {error}");
                 failed += 1;
                 exit_code = exit_code.max(error.kind.exit_code());
@@ -476,9 +525,140 @@ pub fn run(opts: &ConvertOptions) -> i32 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use base64::Engine;
+
+    /// Pixel art of `cells` random colours, each cell `cell` (possibly fractional) image pixels
+    /// wide and placed by rounding, with ±6 noise per channel: an upscaled sprite as generators
+    /// return it. Also returns the art itself, one pixel per cell.
+    pub(crate) fn pixel_art(cells: (u32, u32), cell: f64) -> (image::RgbaImage, image::RgbaImage) {
+        const COLOURS: [[u8; 3]; 7] = [[29, 43, 83], [126, 37, 83], [255, 0, 77], [0, 228, 54], [255, 236, 39], [41, 173, 255], [255, 241, 232]];
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; seed };
+        let truth = image::RgbaImage::from_fn(cells.0, cells.1, |_, _| {
+            let c = COLOURS[(next() % COLOURS.len() as u64) as usize];
+            image::Rgba([c[0], c[1], c[2], 255])
+        });
+        let (w, h) = ((f64::from(cells.0) * cell).round() as u32, (f64::from(cells.1) * cell).round() as u32);
+        let at = |v: u32, n: u32| (((f64::from(v) + 0.5) / cell) as u32).min(n - 1);
+        let image = image::RgbaImage::from_fn(w, h, |x, y| {
+            let mut pixel = *truth.get_pixel(at(x, cells.0), at(y, cells.1));
+            for channel in 0..3 { pixel[channel] = (i16::from(pixel[channel]) + (next() % 13) as i16 - 6).clamp(0, 255) as u8; }
+            pixel
+        });
+        (image, truth)
+    }
+
+    /// `pixel_art` cells (without the grain) plus one-cell details a 3x3 majority would erase: an
+    /// eye (one dark cell in a 3x3 face) and a one-cell outline (five dark cells through a 7x3
+    /// field). Every cell is a pico-8 colour, so with that palette the cells come out as they are.
+    pub(crate) fn detailed_pixel_art(cells: (u32, u32), cell: f64) -> (image::RgbaImage, image::RgbaImage) {
+        let (_, mut truth) = pixel_art(cells, cell);
+        let (skin, dark) = (image::Rgba([0xFF, 0xCC, 0xAA, 255]), image::Rgba([0x1D, 0x2B, 0x53, 255]));
+        for (x, y) in (6..9).flat_map(|x| (6..9).map(move |y| (x, y))) { truth.put_pixel(x, y, skin); }
+        truth.put_pixel(7, 7, dark);
+        for (x, y) in (14..21).flat_map(|x| (10..13).map(move |y| (x, y))) { truth.put_pixel(x, y, skin); }
+        for x in 15..20 { truth.put_pixel(x, 11, dark); }
+        let (w, h) = ((f64::from(cells.0) * cell).round() as u32, (f64::from(cells.1) * cell).round() as u32);
+        let at = |v: u32, n: u32| (((f64::from(v) + 0.5) / cell) as u32).min(n - 1);
+        (image::RgbaImage::from_fn(w, h, |x, y| *truth.get_pixel(at(x, cells.0), at(y, cells.1))), truth)
+    }
+
+    /// A gradient with photo-like grain (±24 per channel): no pixel grid in it. (A clean 8-bit
+    /// gradient is not used: its quantization steps pass the pixel-grid detector as ~5 px cells.)
+    pub(crate) fn gradient(width: u32, height: u32) -> image::RgbaImage {
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        image::RgbaImage::from_fn(width, height, |x, y| {
+            let base = [x * 255 / width, y * 255 / height, (x + y) * 127 / (width + height)];
+            let mut pixel = image::Rgba([0, 0, 0, 255]);
+            for channel in 0..3 {
+                seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
+                pixel[channel] = (base[channel] as i32 + (seed % 49) as i32 - 24).clamp(0, 255) as u8;
+            }
+            pixel
+        })
+    }
+
+    pub(crate) fn png(image: &image::RgbaImage) -> Vec<u8> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    }
+
+    /// The mock backend's direct-route response, returning `png`.
+    pub(crate) fn response_with(png: &[u8]) -> String {
+        let mut response: serde_json::Value = serde_json::from_str(&crate::backend::tests::direct_response()).unwrap();
+        response["data"][0]["b64_json"] = json!(base64::engine::general_purpose::STANDARD.encode(png));
+        response.to_string()
+    }
+
+    #[test]
+    fn pixel_grid_writes_one_pixel_per_cell_with_auto_or_a_size_and_reports_the_grid() {
+        let dir = crate::auth::tests::temp_dir("convert-pixel-grid");
+        let (art, truth) = pixel_art((48, 36), 7.5);
+        let input = dir.join("knight.png");
+        art.save(&input).unwrap();
+        assert_eq!(art.dimensions(), (360, 270), "the fixture is upscaled 7.5x");
+        for grid in ["auto", "7.5"] {
+            let output = dir.join(format!("knight-{grid}.png"));
+            let options = parse(&args(&[input.to_str().unwrap(), "-o", output.to_str().unwrap(), "--pixel-grid", grid, "--json"])).unwrap().unwrap();
+            let info = convert_one(&input, options.output.as_deref(), &options).unwrap();
+            let written = image::open(&output).unwrap().to_rgba8();
+            assert_eq!(written.dimensions(), (48, 36), "{grid}: one pixel per cell");
+            assert_eq!((info["size"].as_str(), info["inputSize"].as_str()), (Some("48x36"), Some("360x270")), "{grid}");
+            for (x, y, pixel) in written.enumerate_pixels() {
+                let want = truth.get_pixel(x, y);
+                assert!((0..3).all(|c| pixel[c].abs_diff(want[c]) <= 6) && pixel[3] == 255, "{grid}: cell ({x}, {y}) is {pixel:?}, drawn as {want:?}");
+            }
+            let measured = &info["pixelGrid"];
+            assert_eq!(measured["cells"], json!([48, 36]), "{grid}");
+            assert!((measured["period"][0].as_f64().unwrap() - 7.5).abs() < 0.1, "{grid}: {measured}");
+            assert!(measured["mode"].is_string() && measured["offset"].is_array() && measured["coherence"].is_array(), "{grid}: {measured}");
+            assert!(measured["capture"].as_f64().unwrap() > 0.17 && measured["purity"].as_f64().unwrap() > 0.85, "{grid}: {measured}");
+            assert!(measured.get("bx").is_none() && measured.get("refused").is_none(), "{grid}: measurements only");
+        }
+        assert!(usage_error(&["a.png", "--pixel-grid", "big"]).contains("--pixel-grid"));
+        assert!(usage_error(&["a.png", "--pixel-grid"]).contains("needs a value"));
+    }
+
+    #[test]
+    fn pixel_grid_refuses_a_gradient_with_its_measurements_and_writes_nothing() {
+        let dir = crate::auth::tests::temp_dir("convert-pixel-grid-refusal");
+        let input = dir.join("sky.png");
+        gradient(320, 240).save(&input).unwrap();
+        let output = dir.join("sky-1x.png");
+        let options = parse(&args(&[input.to_str().unwrap(), "-o", output.to_str().unwrap(), "--pixel-grid=auto", "--json", "--quiet"])).unwrap().unwrap();
+        let Err(Failed { error, json: Some(line) }) = convert_file(&input, options.output.as_deref(), &options) else { panic!("a gradient has no pixel grid") };
+        assert_eq!(error.kind.exit_code(), 1);
+        for part in ["no pixel grid", "capture", "purity", "cells", "--pixel-grid 8"] {
+            assert!(error.message.contains(part), "{part}: {}", error.message);
+        }
+        assert_eq!(line["pixelGrid"]["refused"], true);
+        assert!(!line["pixelGrid"]["reasons"].as_array().unwrap().is_empty(), "{line}");
+        let measured = &line["pixelGrid"]["measurements"];
+        assert!(measured["capture"].is_number() && measured["purity"].is_number() && measured["cells"].is_array(), "{line}");
+        assert_eq!(line["input"], input.display().to_string());
+        assert_eq!(run(&options), 1);
+        assert!(!output.exists(), "nothing is written");
+    }
+
+    #[test]
+    fn pixel_grid_then_palette_gives_one_palette_colour_per_cell() {
+        let dir = crate::auth::tests::temp_dir("convert-pixel-grid-palette");
+        let (art, _) = pixel_art((40, 30), 6.4);
+        let input = dir.join("slime.png");
+        art.save(&input).unwrap();
+        let output = dir.join("slime-1x.png");
+        let options = parse(&args(&[input.to_str().unwrap(), "-o", output.to_str().unwrap(), "--pixel-grid", "auto", "--palette", "pico-8"])).unwrap().unwrap();
+        let colors = options.transform.palette.as_ref().unwrap().colors.clone();
+        assert_eq!(colors.len(), 16, "pico-8");
+        let info = convert_one(&input, options.output.as_deref(), &options).unwrap();
+        let written = image::open(&output).unwrap().to_rgba8();
+        assert_eq!(written.dimensions(), (40, 30), "one pixel per cell");
+        assert_eq!(info["pixelGrid"]["cells"], json!([40, 30]));
+        assert!(written.pixels().all(|p| p[3] == 255 && colors.contains(&[p[0], p[1], p[2]])), "only pico-8 colours");
+    }
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()

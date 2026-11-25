@@ -71,6 +71,14 @@ Options:
                             bottom:30% (or top:40%,left:15%) limits it to bands;
                             --key-cut[=f] first cuts lines that are mostly key colour;
                             --key-spread <step> follows gradients from what's removed
+      --pixel-grid <auto|size>
+                            Pixel art drawn with several image pixels per art pixel
+                            (unevenly, with soft edges): find its cell grid and
+                            reduce it to one pixel per cell, after --key and before
+                            --palette, --trim and --resize. auto finds the cell
+                            size; a size such as 8 or 7.5 is the cell width in
+                            image pixels. When auto finds no grid (not pixel art)
+                            the image is kept un-snapped, with a warning
       --trim-density <f>    With --trim, also drop sparse bottom rows (under f of the
                             fullest row), so leftover specks don't make sprites float
       --resize <size>       WxH, Wx or xH, after --trim; --fit inside (default) |
@@ -350,6 +358,7 @@ pub fn parse(args: &[String]) -> Result<Command> {
             "--trim-density" => "trim-density",
             "--key-cut" => "key-cut",
             "--key-spread" => "key-spread",
+            "--pixel-grid" => "pixel-grid",
             "--view" => "view",
             "--style" => "style",
             "--character" => "character",
@@ -422,6 +431,7 @@ pub fn parse(args: &[String]) -> Result<Command> {
         keys: values.iter().filter(|(k, _)| *k == "key").map(|(_, v)| transform::Key::parse(v)).collect::<codex_img_core::error::Result<_>>()?,
         key_region: last("key-region").map(|v| transform::Region::parse(&v)).transpose()?,
         key_spread: last("key-spread").map(|v| transform::parse_key_spread(&v)).transpose()?,
+        pixel_grid: last("pixel-grid").map(|v| transform::PixelGrid::parse(&v)).transpose()?,
         key_cut: match last("key-cut") {
             Some(share) => Some(transform::parse_key_cut(&share)?),
             None => flags.contains(&"key-cut").then_some(transform::KEY_CUT),
@@ -595,6 +605,8 @@ pub struct Saved {
     pub trim: Option<transform::Rect>,
     /// The untouched generated image, when the transform edited visible pixels.
     pub raw_path: Option<PathBuf>,
+    /// `pixelGrid` for --json, with --pixel-grid.
+    pub pixel_grid: Option<Value>,
 }
 
 pub fn save_image(bytes: &[u8], actual: Format, wanted: Format, enc: &images::Encoding, transform: &transform::Transform, path: &Path) -> Result<Saved> {
@@ -609,13 +621,21 @@ pub fn save_image(bytes: &[u8], actual: Format, wanted: Format, enc: &images::En
                 size: None,
                 trim: processed.trim,
                 raw_path: None,
+                pixel_grid: processed.changes.pixel_grid.as_ref().map(codex_img_core::conversion::pixel_grid_json),
             };
+            // The quota is spent: an image --pixel-grid finds no grid in is kept un-snapped.
+            if let Some(refusal) = codex_img_core::conversion::refusal(&processed.changes) {
+                saved.warning = Some(format!("{}; kept the image un-snapped", codex_img_core::conversion::refusal_message(refusal)));
+            }
             if transform.edits() {
                 saved.size = processed.sizes.map(|(_, size)| size);
                 let raw = raw_path(path, actual);
                 match write_new(&raw, bytes) {
                     Ok(()) => saved.raw_path = Some(raw),
-                    Err(e) => saved.warning = Some(format!("could not keep the original image: {}", e.message)),
+                    Err(e) => {
+                        let kept = format!("could not keep the original image: {}", e.message);
+                        saved.warning = Some(saved.warning.map_or(kept.clone(), |w| format!("{w}; {kept}")));
+                    }
                 }
             }
             return Ok(saved);
@@ -625,7 +645,7 @@ pub fn save_image(bytes: &[u8], actual: Format, wanted: Format, enc: &images::En
     let fallback = path.with_extension(actual.extension());
     write_new(&fallback, bytes)?;
     let warning = format!("{error}; saved the original {} as {}", actual.name(), fallback.display());
-    Ok(Saved { path: fallback, warning: Some(warning), output_quality: None, size: None, trim: None, raw_path: None })
+    Ok(Saved { path: fallback, warning: Some(warning), output_quality: None, size: None, trim: None, raw_path: None, pixel_grid: None })
 }
 
 /// `out/car.png` -> `out/car.raw.png` (in the format the backend returned).
@@ -661,6 +681,7 @@ pub fn describe(saved: &Saved, image: &Generated) -> Value {
     }
     put("rawPath", saved.raw_path.as_ref().map(|p| json!(p.display().to_string())));
     put("trim", saved.trim.map(|r| json!({"x": r.x, "y": r.y, "width": r.width, "height": r.height})));
+    put("pixelGrid", saved.pixel_grid.clone());
     put("quality", reported.quality.as_ref().map(|v| json!(v)));
     put("outputQuality", output_quality.map(|q| json!(q)));
     put("background", reported.background.as_ref().map(|v| json!(v)));
@@ -882,6 +903,26 @@ mod tests {
         let saved = save_image(&empty, Format::Png, Format::Png, &images::Encoding::default(), &trim, &dir.join("empty.png")).unwrap();
         assert!(saved.warning.unwrap().contains("no visible pixels"));
         assert_eq!(std::fs::read(saved.path).unwrap(), empty);
+    }
+
+    #[test]
+    fn save_image_keeps_art_without_a_pixel_grid_unsnapped_with_a_warning() {
+        use crate::convert::tests::{gradient, pixel_art, png};
+        let dir = crate::auth::tests::temp_dir("save-pixel-grid");
+        let grid = transform::Transform { pixel_grid: Some(transform::PixelGrid::Auto), ..Default::default() };
+        let saved = save_image(&png(&gradient(320, 240)), Format::Png, Format::Png, &images::Encoding::default(), &grid, &dir.join("sky.png")).unwrap();
+        let warning = saved.warning.unwrap();
+        for part in ["no pixel grid", "capture", "purity", "--pixel-grid 8", "kept the image un-snapped"] { assert!(warning.contains(part), "{part}: {warning}"); }
+        assert_eq!(saved.path, dir.join("sky.png"));
+        assert_eq!(image::open(&saved.path).unwrap().to_rgba8().dimensions(), (320, 240), "un-snapped");
+        assert!(saved.raw_path.is_some_and(|raw| raw.is_file()), "the original is kept too");
+        assert_eq!(saved.pixel_grid.unwrap()["refused"], true);
+        // With a grid: snapped, no warning, and the measurements for --json.
+        let (art, _) = pixel_art((48, 36), 7.5);
+        let saved = save_image(&png(&art), Format::Png, Format::Png, &images::Encoding::default(), &grid, &dir.join("knight.png")).unwrap();
+        assert!(saved.warning.is_none(), "{:?}", saved.warning);
+        assert_eq!(saved.size, Some((48, 36)));
+        assert_eq!(saved.pixel_grid.unwrap()["cells"], json!([48, 36]));
     }
 
     #[test]

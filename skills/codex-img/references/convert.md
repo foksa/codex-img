@@ -30,7 +30,7 @@
   - `fill`: stretches.
 
   Trim runs first, then resize.
-- **`--nearest`** copies pixels with `--resize`, for whole-number upscaling of pixel art. Downscaling generated pixel art gives uneven pixels because the art is not on a true grid; grid detection is a later feature. It is a flag, with no filter selection.
+- **`--nearest`** copies pixels with `--resize`, for whole-number upscaling of pixel art. Downscaling generated pixel art gives uneven pixels because the art is not on a true grid; use `--pixel-grid auto` (or a cell size like `7.5`) to reduce it to one pixel per cell instead. It runs after `--key` and before `--palette`, `--trim` and `--resize`, and `auto` refuses (exit 1) paintings and photos; flat illustrations can pass, so check the result. See [game-assets.md](game-assets.md#pixel-art---pixel-grid). `--nearest` is a flag, with no filter selection.
 - **`--no-enlarge`** makes `--resize` a maximum size: smaller images keep their size instead of being scaled up.
 - **`--hard-alpha`** makes every pixel fully solid or fully transparent, and keeps it that way through `--resize` and `-c`. Use it for pixel art and crisp sprite edges.
 - **Sprites:** `codex-img convert raw/car.png --trim=4 --resize 400x -o sprites/`, or the same flags when generating.

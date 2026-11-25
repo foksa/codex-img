@@ -22,6 +22,7 @@ impl Settings {
                 "--key-region" => result.transform.key_region = Some(transform::Region::parse(value()?)?),
                 "--key-spread" => result.transform.key_spread = Some(transform::parse_key_spread(value()?)?),
                 "--key-cut" => result.transform.key_cut = Some(inline.map(transform::parse_key_cut).transpose()?.unwrap_or(transform::KEY_CUT)),
+                "--pixel-grid" => result.transform.pixel_grid = Some(transform::PixelGrid::parse(value()?)?),
                 "--trim-density" => result.transform.trim_density = Some(transform::Density::parse(value()?)?),
                 "--palette" => swatch = Some(value()?.to_owned()),
                 "--dither" | "--lossless" | "--palette-clean" | "--no-enlarge" | "--nearest" | "--no-bleed" if inline.is_none() => match flag {
@@ -45,7 +46,7 @@ mod tests {
     use super::*;
     #[test]
     fn rejects_nonlocal_arguments_and_invalid_combinations() {
-        for args in [vec!["--force"], vec!["--output=x.png"], vec!["--via-responses"], vec!["--palette-clean"], vec!["--colors=1"], vec!["--output-quality=101"], vec!["--dither"], vec!["--format=jpeg", "--lossless"], vec!["--nearest=true"]] {
+        for args in [vec!["--force"], vec!["--output=x.png"], vec!["--via-responses"], vec!["--palette-clean"], vec!["--colors=1"], vec!["--output-quality=101"], vec!["--dither"], vec!["--format=jpeg", "--lossless"], vec!["--nearest=true"], vec!["--pixel-grid"], vec!["--pixel-grid=big"], vec!["--pixel-grid=0.5"]] {
             assert!(Settings::parse(&args.into_iter().map(str::to_owned).collect::<Vec<_>>(), |_| unreachable!()).is_err());
         }
     }

@@ -103,11 +103,14 @@ Asset fields (in an asset, null or false turns a default off):
   publish                   false: generate only, e.g. a reference for other assets
   format                    png (default), jpeg or webp
   colors, dither, output_quality, lossless, trim, hard_alpha, resize, fit,
-  no_enlarge, nearest, no_bleed, key, key_region, key_cut, key_spread, trim_density
-                            As the convert options (`codex-img convert --help`):
+  no_enlarge, nearest, no_bleed, key, key_region, key_cut, key_spread, trim_density,
+  pixel_grid                As the convert options (`codex-img convert --help`):
                             true for a flag, a number or string for a value, a
                             list for several keys
   max                       "WxH" or [W, H]: resize to fit, never enlarging
+                            pixel_grid is "auto" or a cell size (8, 7.5). When auto
+                            finds no grid, the image is converted un-snapped, with
+                            a warning
 
 Each generated raw image gets a manifest beside it (<key>.png.json): the prompt sent,
 presets, inputs and what the backend reported. An asset can have a comment string;
@@ -264,9 +267,9 @@ impl Spec {
 }
 
 pub const TOP_FIELDS: [&str; 10] = ["$schema", "raw_dir", "out_dir", "style", "defaults", "assets", "views", "styles", "characters", "palettes"];
-pub const ASSET_FIELDS: [&str; 35] = [
+pub const ASSET_FIELDS: [&str; 36] = [
     "comment", "prompt", "size", "aspect", "view", "style", "character", "style_ref", "character_ref", "composition_ref", "palette", "palette_clean", "quality", "background", "reference", "images", "publish", "format", "colors", "dither", "output_quality", "lossless", "trim",
-    "hard_alpha", "resize", "max", "fit", "no_enlarge", "nearest", "no_bleed", "key", "key_region", "key_cut", "key_spread", "trim_density",
+    "hard_alpha", "resize", "max", "fit", "no_enlarge", "nearest", "no_bleed", "key", "key_region", "key_cut", "key_spread", "trim_density", "pixel_grid",
 ];
 
 pub fn review_raw(path: &Path, value: &Value, key: &str) -> Result<PathBuf> {
@@ -535,6 +538,12 @@ fn parse_asset(key: &str, fields: &Fields, style: Option<&str>, keys: &[&str], b
         keys: fields.strings("key")?.iter().map(|k| Key::parse(k)).collect::<codex_img_core::error::Result<_>>()?,
         key_region: fields.string("key_region")?.map(|v| Region::parse(&v)).transpose()?,
         key_spread: fields.text("key_spread")?.map(|v| transform::parse_key_spread(&v)).transpose()?,
+        pixel_grid: match fields.get("pixel_grid") {
+            None => None,
+            Some(Value::Number(n)) => Some(transform::PixelGrid::parse(&n.to_string()).map_err(|e| Error::usage(e.message.replace("--pixel-grid", "pixel_grid")))?),
+            Some(Value::String(s)) if s == "auto" => Some(transform::PixelGrid::Auto),
+            Some(_) => return Err(Error::usage("pixel_grid must be \"auto\" or a cell size in image pixels, e.g. 8 or 7.5.")),
+        },
         key_cut: fields.flag_or_text("key_cut")?.map(|v| v.map_or(Ok(transform::KEY_CUT), |t| transform::parse_key_cut(&t))).transpose()?,
         trim: fields.flag_or_text("trim")?.map(|v| v.map_or(Ok(0), |t| transform::parse_trim_padding(&t))).transpose()?,
         trim_density: fields.text("trim_density")?.map(|v| Density::parse(&v)).transpose()?,
@@ -1155,8 +1164,18 @@ fn convert_asset(spec: &Spec, asset: &Asset) -> Result<(Status, String, Value)> 
     if let Some(rect) = converted.trim {
         info["trim"] = json!({"x": rect.x, "y": rect.y, "width": rect.width, "height": rect.height});
     }
+    let mut detail = format!(" -> {} ({w}x{h}, {} KB)", shown(&target), written.div_ceil(1024));
+    if let Some(found) = &converted.changes.pixel_grid {
+        info["pixelGrid"] = codex_img_core::conversion::pixel_grid_json(found);
+    }
+    // The raw image cost quota: without a grid, the output is converted un-snapped and the step warns.
+    if let Some(refusal) = codex_img_core::conversion::refusal(&converted.changes) {
+        let warning = format!("{}; converted un-snapped", codex_img_core::conversion::refusal_message(refusal));
+        detail.push_str(&format!("; warning: {warning}"));
+        info["warning"] = json!(warning);
+    }
     let status = if converted.unchanged { Status::Unchanged } else { Status::Ok };
-    Ok((status, format!(" -> {} ({w}x{h}, {} KB)", shown(&target), written.div_ceil(1024)), info))
+    Ok((status, detail, info))
 }
 
 #[cfg(test)]
@@ -1440,6 +1459,81 @@ mod tests {
         std::fs::create_dir_all(dir.join("raw/mill")).unwrap();
         std::fs::write(dir.join("raw/mill/full.png"), b"x").unwrap();
         assert_eq!(generation_plan(&spec, &[1, 3]), [1, 3]);
+    }
+
+    #[test]
+    fn pixel_grid_field_is_checked_and_round_trips_through_the_conversion_record() {
+        use crate::transform::PixelGrid;
+        for (value, want) in [(json!("auto"), PixelGrid::Auto), (json!(8), PixelGrid::Size(8.0)), (json!(7.5), PixelGrid::Size(7.5))] {
+            let original = json!({"assets": {"hero": {"prompt": "A knight.", "pixel_grid": value}}});
+            let (dir, spec) = temp_spec("batch-pixel-grid", original["assets"].clone());
+            let asset = &spec.assets[0];
+            assert_eq!(asset.transform.pixel_grid, Some(want), "{value}");
+            // The record replays to the same settings, and the JSON editor writes them back.
+            let record = crate::conversion_record::build(asset.format, &asset.encoding, &asset.transform);
+            let recorded: Vec<String> = record["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap().to_string()).collect();
+            assert!(recorded.iter().all(|a| crate::conversion_record::allowed(a)), "{recorded:?}");
+            let mut replay = vec![format!("--format={}", record["format"].as_str().unwrap())];
+            replay.extend(recorded.iter().cloned());
+            let settings = codex_img_core::settings::Settings::parse(&replay, |_| unreachable!()).unwrap();
+            assert_eq!(settings.transform, asset.transform, "{value}");
+            let edited = crate::conversion_record::batch_spec(&dir.join("assets.json"), "hero", &original.to_string(), &recorded).unwrap();
+            let edited: Value = serde_json::from_str(&edited).unwrap();
+            assert_eq!(edited["assets"]["hero"]["pixel_grid"], value, "written back as given");
+            let (_, again) = temp_spec("batch-pixel-grid-again", edited["assets"].clone());
+            assert_eq!(again.assets[0].transform, asset.transform);
+        }
+        // `check` accepts "auto" and numbers, in an asset or the defaults, and names the field otherwise.
+        let path = crate::auth::tests::temp_dir("batch-pixel-grid-check").join("assets.json");
+        for good in [json!("auto"), json!(8), json!(7.5), json!(null), json!(false)] {
+            assert_eq!(check_issues(&json!({"assets": {"hero": {"prompt": "A.", "pixel_grid": good}}}), &path), Vec::<Value>::new(), "{good}");
+            assert_eq!(check_issues(&json!({"defaults": {"pixel_grid": good}, "assets": {"hero": {"prompt": "A."}}}), &path), Vec::<Value>::new(), "{good}");
+        }
+        for bad in [json!("big"), json!("7.5"), json!(true), json!(0.5), json!(9000), json!([8])] {
+            let issues = check_issues(&json!({"assets": {"hero": {"prompt": "A.", "pixel_grid": bad}}}), &path);
+            assert_eq!(issues.len(), 1, "{bad}: {issues:?}");
+            assert!(issues[0]["message"].as_str().unwrap().contains("pixel_grid"), "{bad}: {issues:?}");
+        }
+    }
+
+    #[test]
+    fn pixel_grid_snaps_generated_art_and_converts_images_without_a_grid_unsnapped_with_a_warning() {
+        use crate::convert::tests::{gradient, pixel_art, png, response_with};
+        let assets = json!({"knight": {"prompt": "A knight.", "pixel_grid": "auto"}, "sky": {"prompt": "A sky.", "pixel_grid": "auto"}});
+        let (dir, spec) = temp_spec("batch-pixel-grid-run", assets);
+        let (art, _) = pixel_art((48, 36), 7.5);
+        let (backend, captured) = serve(vec![(200, "application/json", response_with(&png(&art))), (200, "application/json", response_with(&png(&gradient(320, 240))))]);
+        let mut opts = options(&[]);
+        opts.jobs = 1;
+        assert_eq!(execute(&opts, &spec, &backend, &|| Ok(creds())).unwrap(), 0, "a missing grid is a warning, not a failure");
+        assert_eq!(captured.lock().unwrap().len(), 2);
+        let size = |path: &str| image::open(dir.join(path)).unwrap().to_rgba8().dimensions();
+        assert_eq!((size("raw/knight.png"), size("raw/sky.png")), ((360, 270), (320, 240)), "raw images are as generated");
+        assert_eq!(size("out/knight.png"), (48, 36), "snapped: one pixel per cell");
+        assert_eq!(size("out/sky.png"), (320, 240), "no grid: converted un-snapped");
+        let (_, detail, info) = convert_asset(&spec, &spec.assets[1]).unwrap();
+        assert!(info["warning"].as_str().unwrap().contains("no pixel grid") && info["warning"].as_str().unwrap().contains("un-snapped"), "{info}");
+        assert!(detail.contains("; warning: --pixel-grid: no pixel grid"), "{detail}");
+        assert_eq!(info["pixelGrid"]["refused"], true);
+        let (_, detail, info) = convert_asset(&spec, &spec.assets[0]).unwrap();
+        assert!(info.get("warning").is_none() && !detail.contains("warning"), "{detail}");
+        assert_eq!(info["pixelGrid"]["cells"], json!([48, 36]));
+    }
+
+    #[test]
+    fn convert_only_pixel_grid_with_a_palette_keeps_one_cell_details() {
+        // Through save_converted, as batch conversion (convert-only included) writes.
+        use crate::convert::tests::{detailed_pixel_art, png};
+        let (dir, spec) = temp_spec("batch-pixel-grid-palette", json!({"face": {"prompt": "A face.", "pixel_grid": "auto", "palette": "pico-8"}}));
+        let (art, truth) = detailed_pixel_art((48, 36), 7.5);
+        std::fs::create_dir_all(dir.join("raw")).unwrap();
+        std::fs::write(dir.join("raw/face.png"), png(&art)).unwrap();
+        let (_, _, info) = convert_asset(&spec, &spec.assets[0]).unwrap();
+        assert_eq!(info["pixelGrid"]["cells"], json!([48, 36]));
+        let written = image::open(dir.join("out/face.png")).unwrap().to_rgba8();
+        assert_eq!(written.get_pixel(7, 7).0, [0x1D, 0x2B, 0x53, 255], "the eye");
+        assert!((15..20).all(|x| written.get_pixel(x, 11).0 == [0x1D, 0x2B, 0x53, 255]), "the outline");
+        assert_eq!(written, truth, "every cell its own pico-8 colour");
     }
 
     #[test]
