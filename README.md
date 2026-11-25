@@ -86,7 +86,7 @@ codex-img status --json                                     # login check, uses 
 | `-q, --quality` | `low` \| `medium` \| `high` \| `auto` |
 | `-b, --background` | `transparent` \| `opaque` \| `auto` |
 | `--via-responses` | Fallback route: a routing model calls the `image_generation` tool through the Responses API. The prompt may be rewritten and `--size` is ignored |
-| `-m, --model` | Routing model for `--via-responses` (default `gpt-5.5`) |
+| `-m, --model` | Routing model for `--via-responses` (default: the first model your Codex catalog lists) |
 | `--trim`, `--resize`, `--fit`, `--hard-alpha`, `--no-enlarge`, `--nearest`, `--no-bleed` | Trim, resize, hard alpha and edge bleed before saving, as in [`convert`](#converting-existing-images). With `--trim`, `--resize` or `--hard-alpha` the untouched original is also kept as `<name>.raw.<ext>`, since quota was spent on it and there's no seed to regenerate it |
 | `-n, --count` | Images to generate in parallel (1–10). Each one is a separate request |
 | `--json` | Prints one JSON line per image: path, size, `submittedPrompt` (when presets, labels or `--aspect` changed the prompt), quality (the backend's), `outputQuality` (the JPEG/WebP quality codex-img applied, when it encoded lossily), revised prompt, usage, duration. After `--trim`, `--resize` or `--hard-alpha`: `size` is the saved file's, plus `rawSize` (the backend's), `rawPath` and `trim` |

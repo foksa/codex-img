@@ -11,7 +11,11 @@ use serde_json::{json, Map, Value};
 use std::io::{BufRead, BufReader, Read};
 use std::time::{Duration, Instant};
 
-pub const DEFAULT_ROUTING_MODEL: &str = "gpt-5.5";
+/// Routing model when the Codex catalog can't be read or lists no usable model.
+pub const FALLBACK_ROUTING_MODEL: &str = "gpt-6.1-terra";
+/// The Codex CLI version sent as `client_version` to `models`; the backend leaves out models that need a newer client.
+const CATALOG_CLIENT_VERSION: &str = "0.172.0";
+const CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
 /// What the Codex CLI requests; the backend decides which model actually serves it.
 pub const IMAGE_MODEL: &str = "gpt-image-2";
 const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
@@ -136,22 +140,28 @@ impl Backend {
         })
     }
 
+    /// The headers every Codex backend call carries.
+    fn authorized(&self, request: ureq::Request, accept: &str, creds: &Credentials) -> ureq::Request {
+        request
+            .set("Authorization", &format!("Bearer {}", creds.access_token))
+            .set("chatgpt-account-id", &creds.account_id)
+            .set("originator", "codex_cli_rs")
+            .set("OpenAI-Beta", "responses=experimental")
+            .set("accept", accept)
+    }
+
     /// POST with bounded retries on 429/5xx.
     fn post(&self, path: &str, body: &Value, accept: &str, creds: &Credentials) -> Result<ureq::Response> {
+        self.send(path, body, accept, creds).map_err(|failure| Error::new(failure.kind, failure.message))
+    }
+
+    /// `post`, keeping what the failure was about.
+    fn send(&self, path: &str, body: &Value, accept: &str, creds: &Credentials) -> std::result::Result<ureq::Response, Failure> {
         let url = format!("{}/{path}", self.base_url);
         let body = body.to_string();
         let mut attempt = 1;
         loop {
-            let result = self
-                .agent
-                .post(&url)
-                .set("Authorization", &format!("Bearer {}", creds.access_token))
-                .set("chatgpt-account-id", &creds.account_id)
-                .set("originator", "codex_cli_rs")
-                .set("OpenAI-Beta", "responses=experimental")
-                .set("accept", accept)
-                .set("content-type", "application/json")
-                .send_string(&body);
+            let result = self.authorized(self.agent.post(&url), accept, creds).set("content-type", "application/json").send_string(&body);
             match result {
                 Ok(response) => return Ok(response),
                 Err(ureq::Error::Status(status, response)) => {
@@ -162,12 +172,17 @@ impl Backend {
                         attempt += 1;
                         continue;
                     }
-                    return Err(Error::new(failure.kind, failure.message));
+                    return Err(failure);
                 }
                 Err(ureq::Error::Transport(transport)) => {
-                    return Err(Error::other(format!(
-                        "Codex connection failed ({transport}). No automatic retry was made; check connectivity before trying again."
-                    )));
+                    return Err(Failure {
+                        message: format!(
+                            "Codex connection failed ({transport}). No automatic retry was made; check connectivity before trying again."
+                        ),
+                        retry: false,
+                        kind: Kind::Other,
+                        model_refused: false,
+                    });
                 }
             }
         }
@@ -197,16 +212,43 @@ impl Backend {
         })
     }
 
+    /// The routing models the account's Codex catalog offers, best first: GET `models` as the Codex CLI does
+    /// (codex-rs `ModelsClient`), keeping `visibility == "list"` and `supported_in_api` models by `priority`.
+    /// None when the call fails; never retried, since the caller has a fallback.
+    fn routing_models(&self, creds: &Credentials) -> Option<Vec<String>> {
+        let url = format!("{}/models?client_version={CATALOG_CLIENT_VERSION}", self.base_url);
+        let response = self.authorized(self.agent.get(&url), "application/json", creds).timeout(CATALOG_TIMEOUT).call().ok()?;
+        let raw = read_body(response).ok()?;
+        let json: Value = serde_json::from_str(&raw).ok()?;
+        let secrets = [creds.access_token.as_str(), creds.account_id.as_str()];
+        Some(usable_routing_models(&json, &secrets))
+    }
+
     fn request_responses(&self, req: &Request, creds: &Credentials, progress: &dyn Fn(&str)) -> Result<RouteResult> {
-        let model = req.model.unwrap_or(DEFAULT_ROUTING_MODEL);
-        if model.starts_with("gpt-image-") {
+        if req.model.is_some_and(|model| model.starts_with("gpt-image-")) {
             return Err(Error::usage(
-                "--model selects the Codex routing model (e.g. gpt-5.5), not the image model; the backend picks the image model.",
+                "--model selects the Codex routing model, not the image model; the backend picks the image model.",
             ));
         }
-        let body = build_responses_body(req, model);
-        let response = self.post("responses", &body, "text/event-stream", creds)?;
+        // None: not fetched yet; Some(None): the catalog call failed.
+        let mut catalog = None;
+        let model = match req.model {
+            Some(model) => model.to_string(),
+            None => {
+                let listed = catalog.insert(self.routing_models(creds));
+                listed.as_ref().and_then(|models| models.first().cloned()).unwrap_or_else(|| FALLBACK_ROUTING_MODEL.to_string())
+            }
+        };
+        let body = build_responses_body(req, &model);
         let secrets = [creds.access_token.as_str(), creds.account_id.as_str()];
+        let response = match self.send("responses", &body, "text/event-stream", creds) {
+            Ok(response) => response,
+            Err(failure) if failure.model_refused => {
+                let listed = catalog.unwrap_or_else(|| self.routing_models(creds));
+                return Err(Error::new(failure.kind, refused_model_message(&failure.message, &model, listed.as_deref(), &secrets)));
+            }
+            Err(failure) => return Err(Error::new(failure.kind, failure.message)),
+        };
         let reader = BufReader::new(response.into_reader().take(MAX_RESPONSE_BYTES));
         let parsed = parse_sse(reader, &secrets, progress)?;
         let Some(image) = parsed.image else {
@@ -221,12 +263,42 @@ impl Backend {
             result: image.result,
             id: image.id,
             reported: image.reported,
-            routing_model: Some(model.to_string()),
+            routing_model: Some(model),
             revised_prompt: image.revised_prompt,
             response_id: parsed.response_id,
             usage: parsed.usage,
         })
     }
+}
+
+/// Slugs of the catalog's listed, API-supported models, lowest `priority` first.
+fn usable_routing_models(catalog: &Value, secrets: &[&str]) -> Vec<String> {
+    let mut models: Vec<(i64, String)> = catalog["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| m["visibility"] == "list" && m["supported_in_api"] == true)
+        .filter_map(|m| Some((m["priority"].as_i64().unwrap_or(i64::MAX), routing_slug(&m["slug"], secrets)?)))
+        .collect();
+    models.sort_by_key(|(priority, _)| *priority);
+    models.into_iter().map(|(_, slug)| slug).collect()
+}
+
+fn routing_slug(value: &Value, secrets: &[&str]) -> Option<String> {
+    value
+        .as_str()
+        .filter(|v| (1..=128).contains(&v.len()) && v.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)))
+        .filter(|v| !secrets.iter().any(|s| !s.is_empty() && v.contains(s)))
+        .map(str::to_string)
+}
+
+fn refused_model_message(failure: &str, model: &str, listed: Option<&[String]>, secrets: &[&str]) -> String {
+    let mut message = format!("{failure} Codex does not offer the routing model '{}' to this account.", clean_text(model, secrets));
+    if let Some(listed) = listed.filter(|l| !l.is_empty()) {
+        message.push_str(&format!(" Your Codex catalog lists: {}.", listed.join(", ")));
+    }
+    message.push_str(" Pick one with --model <slug>.");
+    message
 }
 
 pub fn build_direct_body(req: &Request) -> Value {
@@ -295,6 +367,8 @@ struct Failure {
     message: String,
     retry: bool,
     kind: Kind,
+    /// The backend refused the requested model (not in the account's catalog).
+    model_refused: bool,
 }
 
 fn is_quota(error: &Value) -> bool {
@@ -329,6 +403,7 @@ fn http_failure(status: u16, response: ureq::Response) -> Failure {
             message: "Codex connection was challenged by Cloudflare. This does not establish model or subscription availability.".into(),
             retry: false,
             kind: Kind::Other,
+            model_refused: false,
         };
     }
     let mut body = String::new();
@@ -345,6 +420,7 @@ fn http_failure(status: u16, response: ureq::Response) -> Failure {
         message: format!("Codex image request failed (HTTP {status}). {hint}"),
         retry: !terminal && matches!(status, 429 | 500 | 502 | 503 | 504),
         kind: if status == 401 { Kind::Auth } else { error_kind(&error) },
+        model_refused: error["code"] == "model_not_found" || error["subreason"] == "model_not_in_accessible_catalog",
     }
 }
 
@@ -712,6 +788,7 @@ pub(crate) mod tests {
         let (backend, captured) = serve(vec![(200, "application/json", direct_response())]);
         let image = backend.generate(&request(Transport::Direct, &[]), &creds(), &|_| {}).unwrap();
         let calls = captured.lock().unwrap();
+        assert_eq!(calls.len(), 1, "no catalog call on the direct route");
         assert_eq!(calls[0].path, "/images/generations");
         assert_eq!(calls[0].header("authorization"), Some("Bearer tok_abc"));
         assert_eq!(calls[0].header("chatgpt-account-id"), Some("acct_123"));
@@ -741,18 +818,139 @@ pub(crate) mod tests {
         assert!(error.message.contains("did not return an image"));
     }
 
+    fn catalog() -> String {
+        json!({"models": [
+            {"slug": "gpt-later", "visibility": "list", "priority": 5, "supported_in_api": true},
+            {"slug": "gpt-hidden", "visibility": "hide", "priority": 1, "supported_in_api": true},
+            {"slug": "gpt-unsupported", "visibility": "list", "priority": 2, "supported_in_api": false},
+            {"slug": "gpt-pick", "visibility": "list", "priority": 3, "supported_in_api": true},
+        ]})
+        .to_string()
+    }
+
+    fn refused(model: &str) -> String {
+        let message = format!("The '{model}' model is not supported when using Codex with a ChatGPT account.");
+        json!({"detail": message, "error": {"type": "invalid_request_error", "code": "model_not_found", "message": message,
+            "subreason": "model_not_in_accessible_catalog"}})
+        .to_string()
+    }
+
     #[test]
     fn responses_route_streams_through_routing_model() {
-        let (backend, captured) = serve(vec![(200, "text/event-stream", sse(&image_events()))]);
+        let (backend, captured) = serve(vec![(200, "application/json", catalog()), (200, "text/event-stream", sse(&image_events()))]);
         let image = backend.generate(&request(Transport::Responses, &[]), &creds(), &|_| {}).unwrap();
         let calls = captured.lock().unwrap();
-        assert_eq!(calls[0].path, "/responses");
-        assert_eq!(calls[0].body["model"], "gpt-5.5");
-        assert_eq!(calls[0].body["tools"][0]["size"], "1536x1024");
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1].path, "/responses");
+        assert_eq!(calls[1].body["tools"][0]["size"], "1536x1024");
         assert_eq!(image.id, "ig_1");
-        assert_eq!(image.routing_model.as_deref(), Some("gpt-5.5"));
         assert_eq!(image.revised_prompt.as_deref(), Some("a fox"));
         assert_eq!(image.reported.model.as_deref(), Some("gpt-image-2-codex"));
+    }
+
+    #[test]
+    fn responses_route_routes_through_first_listed_supported_catalog_model() {
+        let (backend, captured) = serve(vec![(200, "application/json", catalog()), (200, "text/event-stream", sse(&image_events()))]);
+        let image = backend.generate(&request(Transport::Responses, &[]), &creds(), &|_| {}).unwrap();
+        let calls = captured.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].path, format!("/models?client_version={CATALOG_CLIENT_VERSION}"));
+        assert_eq!(calls[0].header("authorization"), Some("Bearer tok_abc"));
+        assert_eq!(calls[0].header("chatgpt-account-id"), Some("acct_123"));
+        assert_eq!(calls[0].header("originator"), Some("codex_cli_rs"));
+        assert_eq!(calls[1].path, "/responses");
+        assert_eq!(calls[1].body["model"], "gpt-pick");
+        assert_eq!(image.routing_model.as_deref(), Some("gpt-pick"));
+        let record = crate::manifest::Record {
+            user_prompt: "a fox", prompt: "a fox", used: &[], aspect: None, size: None, quality: None, background: None,
+            inputs: &[], parent: None, conversion: None,
+        };
+        let manifest = crate::manifest::build(&record, &image, &|p: &std::path::Path| p.display().to_string());
+        assert_eq!(manifest["routingModel"], "gpt-pick");
+    }
+
+    #[test]
+    fn responses_route_falls_back_when_catalog_fails_or_is_empty() {
+        for catalog in [(500, "{}".to_string()), (200, json!({"models": []}).to_string())] {
+            let (backend, captured) = serve(vec![(catalog.0, "application/json", catalog.1), (200, "text/event-stream", sse(&image_events()))]);
+            let image = backend.generate(&request(Transport::Responses, &[]), &creds(), &|_| {}).unwrap();
+            let calls = captured.lock().unwrap();
+            assert_eq!(calls.len(), 2, "one catalog call, no retry");
+            assert!(calls[0].path.starts_with("/models?"));
+            assert_eq!(calls[1].body["model"], FALLBACK_ROUTING_MODEL);
+            assert_eq!(image.routing_model.as_deref(), Some("gpt-6.1-terra"));
+        }
+    }
+
+    #[test]
+    fn fallback_keeps_the_real_request_error() {
+        let quota = json!({"error": {"code": "usage_limit_reached"}}).to_string();
+        let (backend, captured) = serve(vec![(500, "application/json", "{}".into()), (429, "application/json", quota)]);
+        let error = backend.generate(&request(Transport::Responses, &[]), &creds(), &|_| {}).unwrap_err();
+        assert_eq!(captured.lock().unwrap().len(), 2);
+        assert_eq!(error.kind, Kind::Quota);
+        assert!(error.message.contains("quota"), "{}", error.message);
+    }
+
+    #[test]
+    fn explicit_model_makes_no_catalog_call() {
+        let (backend, captured) = serve(vec![(200, "text/event-stream", sse(&image_events()))]);
+        let mut req = request(Transport::Responses, &[]);
+        req.model = Some("gpt-chosen");
+        let image = backend.generate(&req, &creds(), &|_| {}).unwrap();
+        let calls = captured.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].path, "/responses");
+        assert_eq!(calls[0].body["model"], "gpt-chosen");
+        assert_eq!(image.routing_model.as_deref(), Some("gpt-chosen"));
+    }
+
+    #[test]
+    fn refused_routing_model_names_model_catalog_slugs_and_flag() {
+        // An explicit --model: the catalog is fetched only after the refusal.
+        let (backend, captured) = serve(vec![(400, "application/json", refused("gpt-old")), (200, "application/json", catalog())]);
+        let mut req = request(Transport::Responses, &[]);
+        req.model = Some("gpt-old");
+        let error = backend.generate(&req, &creds(), &|_| {}).unwrap_err();
+        let calls = captured.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].path, "/responses");
+        assert!(calls[1].path.starts_with("/models?"));
+        assert!(error.message.contains("'gpt-old'"), "{}", error.message);
+        assert!(error.message.contains("lists: gpt-pick, gpt-later."), "{}", error.message);
+        assert!(error.message.contains("--model <slug>"), "{}", error.message);
+        assert!(!error.message.contains("tok_abc") && !error.message.contains("acct_123"));
+
+        // The catalog pick refused: the catalog already fetched is not fetched again.
+        let (backend, captured) = serve(vec![(200, "application/json", catalog()), (400, "application/json", refused("gpt-pick"))]);
+        let error = backend.generate(&request(Transport::Responses, &[]), &creds(), &|_| {}).unwrap_err();
+        assert_eq!(captured.lock().unwrap().len(), 2);
+        assert!(error.message.contains("'gpt-pick'") && error.message.contains("lists: gpt-pick, gpt-later."), "{}", error.message);
+    }
+
+    #[test]
+    fn refused_routing_model_without_catalog_still_names_model_and_flag() {
+        let (backend, captured) = serve(vec![(400, "application/json", refused("gpt-old")), (500, "application/json", "{}".into())]);
+        let mut req = request(Transport::Responses, &[]);
+        req.model = Some("gpt-old");
+        let error = backend.generate(&req, &creds(), &|_| {}).unwrap_err();
+        assert_eq!(captured.lock().unwrap().len(), 2, "the catalog was asked for");
+        assert!(error.message.contains("'gpt-old'"), "{}", error.message);
+        assert!(error.message.contains("--model <slug>"), "{}", error.message);
+        assert!(!error.message.contains("lists"), "{}", error.message);
+    }
+
+    #[test]
+    fn catalog_slugs_are_sanitized() {
+        let listed = usable_routing_models(
+            &json!({"models": [
+                {"slug": "bad slug!", "visibility": "list", "priority": 1, "supported_in_api": true},
+                {"slug": "x-tok_abc", "visibility": "list", "priority": 2, "supported_in_api": true},
+                {"slug": "gpt-6.1-terra", "visibility": "list", "priority": 3, "supported_in_api": true},
+            ]}),
+            &["tok_abc"],
+        );
+        assert_eq!(listed, vec!["gpt-6.1-terra"]);
     }
 
     #[test]

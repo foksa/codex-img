@@ -1,4 +1,4 @@
-use crate::backend::{Generated, DEFAULT_ROUTING_MODEL};
+use crate::backend::Generated;
 use crate::error::{Error, Result};
 use crate::images::{self, Format, MAX_EDIT_IMAGES};
 use crate::presets::Setup;
@@ -113,7 +113,8 @@ Options:
   -b, --background <bg>     transparent | opaque | auto
       --via-responses       Fallback route: a routing model calls the image tool
                             (the prompt may be rewritten)
-  -m, --model <model>       Routing model for --via-responses (default: {DEFAULT_ROUTING_MODEL})
+  -m, --model <model>       Routing model for --via-responses (default: the first
+                            model your Codex catalog lists)
   -n, --count <n>           Number of images, generated in parallel (default: 1)
       --json                Print one JSON object per image to stdout
       --quiet               No progress on stderr
@@ -699,7 +700,7 @@ mod tests {
         assert!(usage_error(&["--bogus", "x"]).contains("Unknown option"));
         assert!(usage_error(&["-o"]).contains("needs a value"));
         assert!(usage_error(&[]).contains("Missing prompt"));
-        assert!(usage_error(&["-m", "gpt-5.5", "x"]).contains("--via-responses"));
+        assert!(usage_error(&["-m", "gpt-6.1-terra", "x"]).contains("--via-responses"));
         assert!(usage_error(&["-c", "1", "x"]).contains("--colors"));
         assert!(usage_error(&["-c", "300", "x"]).contains("--colors"));
         assert!(usage_error(&["-c", "64", "-o", "a.jpg", "x"]).contains("PNG"));
