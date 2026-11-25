@@ -1063,7 +1063,7 @@ fn generate(spec: &Spec, plan: &[usize], jobs: usize, backend: &Backend, credent
 }
 
 /// Generate one raw image and save it, untouched, as `<raw_dir>/<key>.png`. Also returns a
-/// warning when the image's shape is off the asset's `aspect`.
+/// warning when the image's shape is off the asset's `aspect` or its reported quality isn't the asset's.
 fn generate_asset(
     spec: &Spec,
     asset: &Asset,
@@ -1091,7 +1091,8 @@ fn generate_asset(
         session_id,
     };
     let image = backend.generate(&request, credentials, progress)?;
-    let mut warning = asset.aspect.zip(images::dimensions(&image.bytes)).and_then(|(a, size)| a.mismatch(size));
+    let warnings = cli::backend_warnings(asset.aspect, asset.quality.as_deref(), &image);
+    let mut warning = (!warnings.is_empty()).then(|| warnings.join("; "));
     let raw = spec.raw_path(asset);
     let parent = asset.replacement.as_ref().and_then(|r| r.previous.clone()).or_else(|| single_parent(&sent));
     let conversion = crate::conversion_record::build(Format::Png, &Encoding::default(), &crate::transform::Transform::default());
@@ -1590,6 +1591,26 @@ mod tests {
         let calls = captured.lock().unwrap();
         assert!(calls[0].body["prompt"].as_str().unwrap().starts_with("The frame must be in 16:9"));
         assert!(calls[0].body.get("size").is_none(), "aspect sends no size");
+    }
+
+    #[test]
+    fn warns_when_the_backend_returns_another_quality_than_the_asset_asks() {
+        // The fake backend reports `quality: medium` for every image.
+        let (_, spec) = temp_spec("batch-quality", json!({
+            "auto": {"prompt": "A.", "quality": "auto"}, "high": {"prompt": "H.", "quality": "high"},
+            "medium": {"prompt": "M.", "quality": "medium"}, "none": {"prompt": "N."}, "wide": {"prompt": "W.", "quality": "low", "aspect": "16:9"}}));
+        let warning = |key: &str| {
+            let asset = spec.assets.iter().find(|a| a.key == key).unwrap();
+            let (backend, captured) = serve(vec![(200, "application/json", direct_response())]);
+            let (_, warning) = generate_asset(&spec, asset, &backend, &creds(), "s", &|_| {}, &|p| (shown(p), None)).unwrap();
+            assert_eq!(captured.lock().unwrap()[0].body.get("quality").and_then(Value::as_str), asset.quality.as_deref(), "{key}: quality is sent as asked");
+            warning
+        };
+        assert_eq!(warning("high").as_deref(), Some("asked for quality high, the backend returned medium"));
+        assert_eq!(warning("medium"), None, "same tier");
+        assert_eq!(warning("none"), None, "no quality asked");
+        assert_eq!(warning("auto"), None, "auto lets the backend pick");
+        assert_eq!(warning("wide").as_deref(), Some("asked for 16:9 but the backend returned 1x1; asked for quality low, the backend returned medium"));
     }
 
     #[test]

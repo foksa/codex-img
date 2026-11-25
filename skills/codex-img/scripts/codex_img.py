@@ -20,7 +20,7 @@ import urllib.error
 import urllib.request
 import uuid
 
-VERSION = "0.11.1-py"
+VERSION = "0.11.2-py"
 BASE_URL = "https://chatgpt.com/backend-api/codex"
 IMAGE_MODEL = "gpt-image-2"
 JWT_CLAIM_PATH = "https://api.openai.com/auth"
@@ -62,7 +62,7 @@ Options:
       --style-ref, --character-ref, --composition-ref <image>
                             A reference image with a role, labelled in the prompt
                             (repeatable; after -i, max 5 images in all)
-  -q, --quality <q>         low | medium | high | auto
+  -q, --quality <q>         low | medium | high | auto: a hint the backend may override
   -b, --background <bg>     transparent | opaque | auto
   -n, --count <n>           Number of images, generated in parallel (default: 1)
       --json                Print one JSON object per image to stdout

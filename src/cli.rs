@@ -109,7 +109,8 @@ Options:
                             and what the backend reported (automatic in projects)
       --parent <image>      Link the new image to this earlier image
       --no-parent           Do not infer a parent from a single -i image
-  -q, --quality <q>         low | medium | high | auto
+  -q, --quality <q>         low | medium | high | auto: a hint the backend may
+                            override (warns when it reports another tier)
   -b, --background <bg>     transparent | opaque | auto
       --via-responses       Fallback route: a routing model calls the image tool
                             (the prompt may be rewritten)
@@ -246,6 +247,19 @@ impl Aspect {
         let got = w as f64 / h.max(1) as f64;
         ((got / wanted - 1.0).abs() > 0.02).then(|| format!("asked for {}:{} but the backend returned {w}x{h}", self.width, self.height))
     }
+}
+
+/// A warning when the backend reports another quality tier than `-q` asked for. `auto`, no `-q`
+/// or no reported tier leave nothing to compare.
+pub fn quality_mismatch(requested: Option<&str>, reported: Option<&str>) -> Option<String> {
+    let (asked, got) = (requested.filter(|q| *q != "auto")?, reported?);
+    (asked != got).then(|| format!("asked for quality {asked}, the backend returned {got}"))
+}
+
+/// What the backend changed from the request: the frame off `aspect`, then the quality tier.
+pub fn backend_warnings(aspect: Option<Aspect>, quality: Option<&str>, image: &Generated) -> Vec<String> {
+    let shape = aspect.zip(images::dimensions(&image.bytes)).and_then(|(a, size)| a.mismatch(size));
+    shape.into_iter().chain(quality_mismatch(quality, image.reported.quality.as_deref())).collect()
 }
 
 pub fn parse(args: &[String]) -> Result<Command> {
@@ -810,6 +824,31 @@ mod tests {
         assert_eq!(p(&at("out.png"), Format::Png, "ig_1", 1, 3), x.join("out-2.png"));
         assert_eq!(p(&at("dir/"), Format::Jpeg, "ig_abc", 0, 1), x.join("dir").join("codex-img-20260102T030405-ig_abc.jpg"));
         assert_eq!(sanitize_id("a1b2c3d4-e5f6-7890-abcd-ef0123456789"), "ef0123456789");
+    }
+
+    #[test]
+    fn warns_once_when_the_backend_returns_another_quality_tier() {
+        use crate::backend::{tests::{creds, direct_response, serve}, Request, Transport};
+        // What generate warns about one image: -q sent, the reply's `quality` as the backend reports it.
+        let warnings = |requested: Option<&str>, reported: Option<&str>, aspect: Option<Aspect>| {
+            let mut body: Value = serde_json::from_str(&direct_response()).unwrap();
+            match reported { Some(q) => body["quality"] = json!(q), None => { body.as_object_mut().unwrap().remove("quality"); } }
+            let (backend, captured) = serve(vec![(200, "application/json", body.to_string())]);
+            let request = Request { prompt: "a fox", transport: Transport::Direct, model: None, output_format: Format::Png, size: None,
+                quality: requested, background: None, input_images: &[], session_id: "s" };
+            let image = backend.generate(&request, &creds(), &|_| {}).unwrap();
+            assert_eq!(captured.lock().unwrap()[0].body.get("quality").and_then(Value::as_str), requested, "-q is sent as asked");
+            assert_eq!(image.reported.quality.as_deref(), reported, "the reported tier is parsed");
+            backend_warnings(aspect, requested, &image)
+        };
+        assert_eq!(warnings(Some("high"), Some("low"), None), ["asked for quality high, the backend returned low"]);
+        assert_eq!(warnings(Some("low"), Some("medium"), None), ["asked for quality low, the backend returned medium"]);
+        assert!(warnings(Some("low"), Some("low"), None).is_empty(), "same tier");
+        assert!(warnings(None, Some("low"), None).is_empty(), "no -q");
+        assert!(warnings(Some("high"), None, None).is_empty(), "no reported tier");
+        assert!(warnings(Some("auto"), Some("low"), None).is_empty(), "auto lets the backend pick");
+        let wide = Aspect::parse("16:9").ok();
+        assert_eq!(warnings(Some("high"), Some("low"), wide), ["asked for 16:9 but the backend returned 1x1", "asked for quality high, the backend returned low"]);
     }
 
     #[test]

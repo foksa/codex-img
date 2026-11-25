@@ -75,6 +75,8 @@ pub fn build(record: &Record, image: &Generated, shown: &dyn Fn(&Path) -> String
     if let Some(conversion) = record.conversion { out.insert("conversion".into(), conversion.clone()); }
     out.insert("transport".into(), json!(match image.transport { crate::backend::Transport::Direct => "direct", crate::backend::Transport::Responses => "responses" }));
     if let Some(model) = &image.routing_model { out.insert("routingModel".into(), json!(model)); }
+    // The prompt the Responses route actually drew from; `rerun` still replays `prompt`.
+    if let Some(revised) = &image.revised_prompt { out.insert("revisedPrompt".into(), json!(revised)); }
     let r = &image.reported;
     let mut reported = Map::new();
     for (key, value) in [("imageModel", &r.model), ("size", &r.size), ("quality", &r.quality), ("background", &r.background)] {
@@ -178,6 +180,12 @@ mod tests {
         assert_eq!(manifest["inputs"][0]["path"], "ref.png");
         assert_eq!(manifest["inputs"][0]["fingerprint"], json!(fingerprint(&reference).unwrap()));
         assert_eq!((manifest["reported"]["quality"].as_str(), manifest["generationId"].as_str()), (Some("low"), Some("gen_1")));
+        assert!(manifest.get("revisedPrompt").is_none(), "the direct route has no revised prompt");
+        let mut routed = image;
+        (routed.transport, routed.routing_model, routed.revised_prompt) = (Transport::Responses, Some("gpt-5".into()), Some("A red fox, side view.".into()));
+        let routed = build(&record, &routed, &|p: &Path| p.display().to_string());
+        assert_eq!((routed["transport"].as_str(), routed["revisedPrompt"].as_str()), (Some("responses"), Some("A red fox, side view.")));
+        assert_eq!(routed["prompt"], "Camera: side.\n\nA fox.", "the submitted prompt stays the one rerun replays");
 
         let path = path_for(&dir.join("fox.png"));
         assert_eq!(path, dir.join("fox.png.json"));

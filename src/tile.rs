@@ -70,6 +70,9 @@ Options:
       --preview <file>      Also write the result twice side by side, cropped
                             around the join, to check it in one image
       --keep-edit           Keep the model's whole edit as <output>.edit.png
+      --manifest            Write <output>.json: the prompt sent, the input, the
+                            parent and what the backend reported (automatic in
+                            projects)
       --parent <image>      Link to this earlier image instead of the input
       --no-parent           Do not infer a parent from the panorama
       --force               Replace existing output files
@@ -83,7 +86,7 @@ The tile keeps its size; resize it afterwards with `codex-img convert`."#
 pub fn parse(args: &[String]) -> Result<Option<TileOptions>> {
     let mut parent = None; let mut no_parent = false;
     let (mut input, mut output, mut prompt, mut quality, mut preview) = (None, None, None, None, None);
-    let (mut keep_edit, mut force, mut json, mut quiet) = (false, false, false, false);
+    let (mut keep_edit, mut force, mut json, mut quiet, mut manifest) = (false, false, false, false, false);
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         if !arg.starts_with('-') {
@@ -105,6 +108,7 @@ pub fn parse(args: &[String]) -> Result<Option<TileOptions>> {
             "--parent" => parent = Some(value()?),
             "--no-parent" => no_parent = true,
             "--keep-edit" => keep_edit = true,
+            "--manifest" => manifest = true,
             "--force" => force = true,
             "--json" => json = true,
             "--quiet" => quiet = true,
@@ -123,7 +127,7 @@ pub fn parse(args: &[String]) -> Result<Option<TileOptions>> {
         return Err(Error::usage("--prompt must be at most 4,000 characters."));
     }
     if parent.is_some() && no_parent { return Err(Error::usage("--parent and --no-parent cannot be combined.")); }
-    Ok(Some(TileOptions { input, output, format, prompt, quality, preview, keep_edit, force, json, quiet, parent, no_parent, manifest: false, edit_only: false, replay_reference: None, submitted_prompt: None }))
+    Ok(Some(TileOptions { input, output, format, prompt, quality, preview, keep_edit, force, json, quiet, parent, no_parent, manifest, edit_only: false, replay_reference: None, submitted_prompt: None }))
 }
 
 pub fn run(opts: &TileOptions) -> Result<i32> {
@@ -136,6 +140,11 @@ fn execute(opts: &TileOptions, backend: &Backend, credentials: &dyn Fn() -> Resu
 }
 
 pub(crate) fn execute_in(opts: &TileOptions, backend: &Backend, credentials: &dyn Fn() -> Result<auth::Credentials>, cwd: &Path) -> Result<i32> {
+    execute_printing(opts, backend, credentials, cwd, &|line| println!("{line}"))
+}
+
+/// `execute_in` with stdout as `print`, so tests can read the result line.
+fn execute_printing(opts: &TileOptions, backend: &Backend, credentials: &dyn Fn() -> Result<auth::Credentials>, cwd: &Path, print: &dyn Fn(String)) -> Result<i32> {
     let started = Instant::now();
     let log = |message: &str| {
         if !opts.quiet {
@@ -157,7 +166,9 @@ pub(crate) fn execute_in(opts: &TileOptions, backend: &Backend, credentials: &dy
     if let Some(taken) = targets.iter().find(|p| !opts.force && p.exists()) {
         return Err(Error::other(format!("{} already exists; add --force to replace it.", taken.display())));
     }
-    let (bytes, _) = convert::read_image(Path::new(&opts.input))?;
+    // Against `cwd`, so the manifest's input stays findable from another folder (as generate does).
+    let input = crate::batch::resolved(&cwd.join(&opts.input));
+    let (bytes, _) = convert::read_image(&input)?;
     if let Some((expected, anyway)) = &opts.replay_reference {
         let current = format!("fnv1a64:{:016x}", util::fnv1a64(&bytes));
         if expected != &current {
@@ -192,12 +203,12 @@ pub(crate) fn execute_in(opts: &TileOptions, backend: &Backend, credentials: &dy
         input_images: std::slice::from_ref(&reference),
         session_id: &session_id,
     };
-    let parent = opts.parent.as_ref().map(|path| cwd.join(path)).or_else(|| (!opts.no_parent).then(|| cwd.join(&opts.input)));
+    let parent = opts.parent.as_ref().map(|path| cwd.join(path)).or_else(|| (!opts.no_parent).then(|| input.clone()));
     let job = run.job(json!({
         "parent": parent.as_deref().map(events::absolute),
         "prompt": opts.prompt.as_deref().unwrap_or(PROMPT),
         "submittedPrompt": prompt,
-        "inputs": [{"path": events::absolute(Path::new(&opts.input)), "role": "input"}],
+        "inputs": [{"path": events::absolute(&input), "role": "input"}],
         "request": manifest::request(None, Some(&size), opts.quality.as_deref(), Some("opaque")),
         "output": events::absolute(&output),
     }));
@@ -206,6 +217,9 @@ pub(crate) fn execute_in(opts: &TileOptions, backend: &Backend, credentials: &dy
             job.stage(stage);
             log(stage)
         })?;
+        if let Some(warning) = cli::quality_mismatch(opts.quality.as_deref(), generated.reported.quality.as_deref()) {
+            warn(&warning);
+        }
         // The quota is spent: keep the edit first if asked, so a failure below doesn't lose it.
         if opts.keep_edit {
             cli::write_output(&edit_path, &generated.bytes, opts.force)?;
@@ -227,18 +241,18 @@ pub(crate) fn execute_in(opts: &TileOptions, backend: &Backend, credentials: &dy
         }
         let (from, to) = spliced.band;
         let mut info = json!({
-            "path": output.display().to_string(),
-            "input": opts.input,
+            "path": events::absolute(&output),
+            "input": events::absolute(&input),
             "size": size,
             "editSize": format!("{}x{}", edited_size.0, edited_size.1),
             // The repaired band now straddles the left and right edges, where the tile meets itself.
             "bandWidth": to - from,
-            "preview": opts.preview,
-            "edit": opts.keep_edit.then(|| edit_path.display().to_string()),
+            "preview": opts.preview.as_deref().map(|p| events::absolute(Path::new(p))),
+            "edit": opts.keep_edit.then(|| events::absolute(&edit_path)),
             "durationMs": started.elapsed().as_millis() as u64,
         });
         if project || opts.manifest {
-            let inputs = [manifest::Input { path: PathBuf::from(&opts.input), role: "input", character: None, fingerprint: Some(format!("fnv1a64:{:016x}", util::fnv1a64(&bytes))) }];
+            let inputs = [manifest::Input { path: input.clone(), role: "input", character: None, fingerprint: Some(format!("fnv1a64:{:016x}", util::fnv1a64(&bytes))) }];
             let conversion = crate::conversion_record::build(opts.format, &Encoding::default(), &transform::Transform::default());
             let record = manifest::Record {
                 user_prompt: opts.prompt.as_deref().unwrap_or(PROMPT),
@@ -269,14 +283,10 @@ pub(crate) fn execute_in(opts: &TileOptions, backend: &Backend, credentials: &dy
             }
             let path = manifest::path_for(&output);
             if path.is_file() {
-                info["manifestPath"] = json!(path.display().to_string());
+                info["manifestPath"] = json!(events::absolute(&path));
             }
         }
-        if opts.json {
-            println!("{info}");
-        } else {
-            println!("{}", output.display());
-        }
+        print(if opts.json { info.to_string() } else { output.display().to_string() });
         job.done(json!({"path": events::absolute(&output), "size": size, "durationMs": info["durationMs"].clone(),
             "manifestPath": info["manifestPath"].as_str().map(|p| events::absolute(Path::new(p)))}));
         log(&format!("saved {} ({size}, repaired band {} px wide)", output.display(), to - from));
@@ -289,9 +299,26 @@ pub(crate) fn execute_in(opts: &TileOptions, backend: &Backend, credentials: &dy
     result
 }
 
+/// A warning about what the backend changed, printed as generate prints it: `--quiet` and
+/// `--json` keep it (stdout stays the result).
+fn warn(warning: &str) {
+    eprintln!("codex-img: warning: {warning}");
+    #[cfg(test)]
+    tests::WARNINGS.with(|list| list.borrow_mut().push(warning.to_string()));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// What `warn` printed on this test's thread.
+        pub(super) static WARNINGS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn take_warnings() -> Vec<String> {
+        WARNINGS.with(|list| std::mem::take(&mut *list.borrow_mut()))
+    }
     use crate::backend::tests::{creds, direct_response, serve};
 
     fn args(list: &[&str]) -> Vec<String> {
@@ -379,5 +406,154 @@ mod tests {
         assert_eq!(execute_in(&opts, &backend, &|| Ok(creds()), &dir).unwrap(), 0);
         assert_eq!(manifest::read(&path).unwrap()["comment"], "keep this note");
         assert_eq!(captured.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn manifest_flag_records_the_parent_outside_a_project_and_json_paths_are_absolute() {
+        let dir = crate::auth::tests::temp_dir("tile-manifest").canonicalize().unwrap();
+        assert!(crate::project::root(&dir).is_none(), "the test runs outside a project");
+        RgbaImage::from_pixel(128, 32, Rgba([90, 90, 200, 255])).save(dir.join("sky.png")).unwrap();
+        RgbaImage::from_pixel(128, 32, Rgba([10, 10, 10, 255])).save(dir.join("x.png")).unwrap();
+        let (backend, captured) = serve(vec![(200, "application/json", direct_response()), (200, "application/json", direct_response())]);
+        let lines = std::cell::RefCell::new(Vec::new());
+        let print = |line: String| lines.borrow_mut().push(line);
+        // Paths relative to the process's folder, as a user types them.
+        let here = std::env::current_dir().unwrap();
+        let rel = |name: &str| pathdiff(&dir.join(name), &here);
+
+        let plain = parse(&args(&[&rel("sky.png"), "-o", &rel("plain.png"), "--parent", &rel("x.png"), "--json", "--quiet"])).unwrap().unwrap();
+        assert!(!plain.manifest);
+        assert_eq!(execute_printing(&plain, &backend, &|| Ok(creds()), &here, &print).unwrap(), 0);
+        assert!(dir.join("plain.png").is_file());
+        assert!(!dir.join("plain.png.json").exists(), "no manifest without --manifest outside a project");
+        let info: serde_json::Value = serde_json::from_str(&lines.borrow()[0]).unwrap();
+        assert!(Path::new(&rel("plain.png")).is_relative(), "the command was given relative paths");
+        assert_eq!(info["path"], dir.join("plain.png").display().to_string(), "path is absolute");
+        assert_eq!(info["input"], dir.join("sky.png").display().to_string(), "input is absolute");
+        assert!(info.get("manifestPath").is_none());
+
+        let recorded = parse(&args(&[&rel("sky.png"), "-o", &rel("tile.png"), "--manifest", "--parent", &rel("x.png"), "--json", "--quiet"])).unwrap().unwrap();
+        assert!(recorded.manifest);
+        assert_eq!(execute_printing(&recorded, &backend, &|| Ok(creds()), &here, &print).unwrap(), 0);
+        let note = manifest::read(&dir.join("tile.png.json")).expect("--manifest writes tile.png.json");
+        assert_eq!(note["source"], "tile");
+        let parent = Path::new(note["parent"].as_str().expect("--parent is recorded in the manifest"));
+        assert_eq!(parent.canonicalize().unwrap(), dir.join("x.png"), "the recorded parent is x.png");
+        let info: serde_json::Value = serde_json::from_str(&lines.borrow()[1]).unwrap();
+        assert_eq!(info["manifestPath"], dir.join("tile.png.json").display().to_string());
+        assert_eq!(captured.lock().unwrap().len(), 2);
+        assert!(help().contains("--manifest"));
+    }
+
+    #[test]
+    fn relative_panorama_outside_a_project_reruns_from_another_folder_for_tile_and_kept_edit() {
+        let dir = crate::auth::tests::temp_dir("tile-relative").canonicalize().unwrap();
+        assert!(crate::project::root(&dir).is_none(), "the test runs outside a project");
+        RgbaImage::from_pixel(128, 32, Rgba([90, 90, 200, 255])).save(dir.join("sky.png")).unwrap();
+        // Paths relative to the process's folder, as a user types them.
+        let here = std::env::current_dir().unwrap();
+        let sky = pathdiff(&dir.join("sky.png"), &here);
+        assert!(Path::new(&sky).is_relative(), "the panorama is given as a relative path");
+        let opts = parse(&args(&[&sky, "-o", &pathdiff(&dir.join("tile.png"), &here), "--manifest", "--keep-edit", "--quiet"])).unwrap().unwrap();
+        let (backend, captured) = serve(vec![(200, "application/json", direct_response())]);
+        assert_eq!(execute_in(&opts, &backend, &|| Ok(creds()), &here).unwrap(), 0);
+        assert_eq!(captured.lock().unwrap().len(), 1);
+        // Another, deeper folder without the panorama, where the relative path leads nowhere.
+        let elsewhere = crate::auth::tests::temp_dir("tile-relative-elsewhere").canonicalize().unwrap().join("a/b/c/d");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        assert!(crate::project::root(&elsewhere).is_none() && !elsewhere.join(&sky).exists(), "the relative path does not resolve from there");
+        for image in ["tile.png", "tile.edit.png"] {
+            let note = manifest::read(&dir.join(format!("{image}.json"))).unwrap_or_else(|| panic!("{image} has a manifest"));
+            let recorded = Path::new(note["inputs"][0]["path"].as_str().unwrap());
+            assert!(recorded.is_absolute(), "{image}: the input is recorded absolute, not as {}", recorded.display());
+            let rerun = crate::rerun::Options { image: dir.join(image).display().to_string(), count: 1, output: None, anyway: false, json: false, quiet: true };
+            let replay = crate::rerun::prepare(&rerun, &elsewhere).unwrap_or_else(|e| panic!("{image}: rerun from another folder failed: {}", e.message));
+            let saved = replay.replay.expect("a replay");
+            assert_eq!(saved.inputs[0].path.canonicalize().unwrap(), dir.join("sky.png"), "{image}: the rerun finds the original panorama");
+        }
+    }
+
+    #[test]
+    fn relative_panorama_inside_a_project_stays_project_relative() {
+        let dir = crate::auth::tests::temp_dir("tile-project-relative").canonicalize().unwrap();
+        std::fs::write(dir.join("codex-img.json"), "{}").unwrap();
+        let art = dir.join("art");
+        std::fs::create_dir_all(&art).unwrap();
+        RgbaImage::from_pixel(128, 32, Rgba([90, 90, 200, 255])).save(art.join("sky.png")).unwrap();
+        let output = art.join("tile.png");
+        let opts = parse(&args(&["sky.png", "-o", output.to_str().unwrap(), "--keep-edit", "--quiet"])).unwrap().unwrap();
+        let (backend, _captured) = serve(vec![(200, "application/json", direct_response())]);
+        assert_eq!(execute_in(&opts, &backend, &|| Ok(creds()), &art).unwrap(), 0);
+        for note in [manifest::path_for(&output), art.join("tile.edit.png.json")] {
+            let note = manifest::read(&note).unwrap();
+            assert_eq!(note["inputs"][0]["path"], "art/sky.png", "relative to the project root, not to the folder tile ran in");
+        }
+    }
+
+    #[test]
+    fn warns_when_the_backend_returns_another_quality_tier_in_quiet_and_json_modes() {
+        let dir = crate::auth::tests::temp_dir("tile-quality").canonicalize().unwrap();
+        assert!(crate::project::root(&dir).is_none(), "the test runs outside a project");
+        let input = dir.join("sky.png");
+        RgbaImage::from_pixel(128, 32, Rgba([90, 90, 200, 255])).save(&input).unwrap();
+        let body: serde_json::Value = serde_json::from_str(&direct_response()).unwrap();
+        assert_eq!(body["quality"], "medium", "the backend reports medium");
+        let (backend, captured) = serve((0..5).map(|_| (200, "application/json", direct_response())).collect());
+        let lines = std::cell::RefCell::new(Vec::new());
+        let print = |line: String| lines.borrow_mut().push(line);
+        let tile = |index: usize, extra: &[&str]| {
+            let output = dir.join(format!("t{index}.png"));
+            let mut list = vec![input.to_str().unwrap(), "-o", output.to_str().unwrap()];
+            list.extend_from_slice(extra);
+            let opts = parse(&args(&list)).unwrap().unwrap();
+            take_warnings();
+            assert_eq!(execute_printing(&opts, &backend, &|| Ok(creds()), &dir, &print).unwrap(), 0);
+            assert!(output.is_file());
+            take_warnings()
+        };
+        let expected = ["asked for quality low, the backend returned medium"];
+        assert_eq!(tile(0, &["-q", "low", "--quiet"]), expected, "--quiet keeps the warning");
+        assert_eq!(tile(1, &["-q", "low", "--json"]), expected, "--json keeps the warning");
+        assert_eq!(tile(2, &["-q", "low", "--json", "--quiet"]), expected, "--json --quiet keeps the warning");
+        assert!(tile(3, &["-q", "medium", "--quiet"]).is_empty(), "matching tiers warn about nothing");
+        assert!(tile(4, &["--quiet"]).is_empty(), "no -q warns about nothing");
+        let calls = captured.lock().unwrap();
+        assert_eq!(calls.iter().map(|c| c.body["quality"].as_str()).collect::<Vec<_>>(), [Some("low"), Some("low"), Some("low"), Some("medium"), None], "-q is sent as asked");
+        let lines = lines.borrow();
+        assert_eq!(lines.len(), 5);
+        for line in &lines[1..3] {
+            let info: serde_json::Value = serde_json::from_str(line).expect("--json stdout stays one JSON object");
+            assert!(info["path"].is_string());
+        }
+    }
+
+    #[test]
+    fn rerun_of_a_tile_manifest_warns_when_the_backend_returns_another_quality_tier() {
+        let dir = crate::auth::tests::temp_dir("tile-rerun-quality").canonicalize().unwrap();
+        std::fs::write(dir.join("codex-img.json"), "{}").unwrap();
+        let input = dir.join("sky.png");
+        RgbaImage::from_pixel(128, 32, Rgba([90, 90, 200, 255])).save(&input).unwrap();
+        let output = dir.join("tile.png");
+        let opts = parse(&args(&[input.to_str().unwrap(), "-o", output.to_str().unwrap(), "-q", "low", "--quiet"])).unwrap().unwrap();
+        let (backend, captured) = serve(vec![(200, "application/json", direct_response()), (200, "application/json", direct_response())]);
+        execute_in(&opts, &backend, &|| Ok(creds()), &dir).unwrap();
+        assert_eq!(manifest::read(&manifest::path_for(&output)).unwrap()["request"]["quality"], "low");
+        take_warnings();
+        let replay = crate::rerun::prepare(&crate::rerun::Options { image: output.display().to_string(), count: 1, output: Some("next.png".into()), anyway: false, json: false, quiet: true }, &dir).unwrap();
+        assert_eq!(replay.quality.as_deref(), Some("low"), "the rerun asks for the recorded tier");
+        assert_eq!(crate::rerun::execute_tile(&replay, &backend, &|| Ok(creds()), &dir).unwrap(), 0);
+        assert!(dir.join("next.png").is_file());
+        assert_eq!(captured.lock().unwrap().len(), 2);
+        assert_eq!(take_warnings(), ["asked for quality low, the backend returned medium"]);
+    }
+
+    /// `path` relative to `base`, through `..` where needed.
+    fn pathdiff(path: &Path, base: &Path) -> String {
+        let (path, base) = (path.canonicalize().unwrap_or(path.to_path_buf()), base.canonicalize().unwrap());
+        let common = path.components().zip(base.components()).take_while(|(a, b)| a == b).count();
+        let mut out = PathBuf::new();
+        for _ in base.components().skip(common) { out.push(".."); }
+        for part in path.components().skip(common) { out.push(part); }
+        out.display().to_string()
     }
 }

@@ -176,7 +176,7 @@ codex-img tile sky.png -o sky-tile.png --preview /tmp/join.png
 - **Always look at the `--preview` image,** which shows the join in the middle.
 - **Don't prompt landmarks onto an edge** as a workaround for mirroring.
 
-Inside a project, tile outputs and `--keep-edit` images also get manifests. `--force` may replace images, but existing manifests are preserved and a warning is printed. Use a new output name to keep each image and its record together.
+Inside a project, tile outputs and `--keep-edit` images also get manifests; outside one, add `--manifest` (it records `--parent` too). `--force` may replace images, but existing manifests are preserved and a warning is printed. Use a new output name to keep each image and its record together.
 
 For another version of an existing result, `codex-img rerun <image> -o <new-path>`
 repeats its recorded request and conversion, using one image of quota. Tile reruns use

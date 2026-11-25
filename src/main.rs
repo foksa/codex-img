@@ -236,7 +236,7 @@ fn execute(mut opts: Options, backend: Backend, credentials: &dyn Fn() -> Result
                             job.stage(stage);
                             log(&format!("{tag}{stage}"))
                         })?;
-                        if let Some(warning) = opts.setup.aspect.zip(images::dimensions(&image.bytes)).and_then(|(a, size)| a.mismatch(size)) {
+                        for warning in cli::backend_warnings(opts.setup.aspect, opts.quality.as_deref(), &image) {
                             eprintln!("codex-img: {tag}warning: {warning}");
                         }
                         let target = cli::output_path(opts.output.as_deref(), format, &image.id, index, count, util::now_secs());
