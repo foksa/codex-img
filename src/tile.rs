@@ -417,30 +417,40 @@ mod tests {
         let (backend, captured) = serve(vec![(200, "application/json", direct_response()), (200, "application/json", direct_response())]);
         let lines = std::cell::RefCell::new(Vec::new());
         let print = |line: String| lines.borrow_mut().push(line);
-        // Paths relative to the process's folder, as a user types them.
-        let here = std::env::current_dir().unwrap();
-        let rel = |name: &str| pathdiff(&dir.join(name), &here);
+        // Paths relative to the folder tile runs in, as a user types them. That folder is inside the temp dir, not the
+        // process's folder, which may sit on another drive (Windows CI) where no relative path to the temp dir exists.
+        let work = dir.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let rel = |name: &str| Path::new("..").join(name).display().to_string();
+        let absolute = |value: &serde_json::Value| {
+            let path = Path::new(value.as_str().expect("a path string"));
+            assert!(path.is_absolute(), "{} is absolute", path.display());
+            path.canonicalize().unwrap()
+        };
+        // The output stays absolute: tile resolves -o against the process's folder, not `cwd`.
+        let out = |name: &str| dir.join(name).display().to_string();
 
-        let plain = parse(&args(&[&rel("sky.png"), "-o", &rel("plain.png"), "--parent", &rel("x.png"), "--json", "--quiet"])).unwrap().unwrap();
+        let plain = parse(&args(&[&rel("sky.png"), "-o", &out("plain.png"), "--parent", &rel("x.png"), "--json", "--quiet"])).unwrap().unwrap();
         assert!(!plain.manifest);
-        assert_eq!(execute_printing(&plain, &backend, &|| Ok(creds()), &here, &print).unwrap(), 0);
+        assert!(Path::new(&rel("sky.png")).is_relative() && Path::new(&rel("x.png")).is_relative(), "the command was given relative paths");
+        assert!(work.join(rel("sky.png")).is_file() && !Path::new(&rel("sky.png")).exists(), "the relative paths resolve against the cwd argument, not the process's folder");
+        assert_eq!(execute_printing(&plain, &backend, &|| Ok(creds()), &work, &print).unwrap(), 0);
         assert!(dir.join("plain.png").is_file());
         assert!(!dir.join("plain.png.json").exists(), "no manifest without --manifest outside a project");
         let info: serde_json::Value = serde_json::from_str(&lines.borrow()[0]).unwrap();
-        assert!(Path::new(&rel("plain.png")).is_relative(), "the command was given relative paths");
-        assert_eq!(info["path"], dir.join("plain.png").display().to_string(), "path is absolute");
-        assert_eq!(info["input"], dir.join("sky.png").display().to_string(), "input is absolute");
+        assert_eq!(absolute(&info["path"]), dir.join("plain.png"), "path is absolute");
+        assert_eq!(absolute(&info["input"]), dir.join("sky.png"), "input is absolute");
         assert!(info.get("manifestPath").is_none());
 
-        let recorded = parse(&args(&[&rel("sky.png"), "-o", &rel("tile.png"), "--manifest", "--parent", &rel("x.png"), "--json", "--quiet"])).unwrap().unwrap();
+        let recorded = parse(&args(&[&rel("sky.png"), "-o", &out("tile.png"), "--manifest", "--parent", &rel("x.png"), "--json", "--quiet"])).unwrap().unwrap();
         assert!(recorded.manifest);
-        assert_eq!(execute_printing(&recorded, &backend, &|| Ok(creds()), &here, &print).unwrap(), 0);
+        assert_eq!(execute_printing(&recorded, &backend, &|| Ok(creds()), &work, &print).unwrap(), 0);
         let note = manifest::read(&dir.join("tile.png.json")).expect("--manifest writes tile.png.json");
         assert_eq!(note["source"], "tile");
         let parent = Path::new(note["parent"].as_str().expect("--parent is recorded in the manifest"));
         assert_eq!(parent.canonicalize().unwrap(), dir.join("x.png"), "the recorded parent is x.png");
         let info: serde_json::Value = serde_json::from_str(&lines.borrow()[1]).unwrap();
-        assert_eq!(info["manifestPath"], dir.join("tile.png.json").display().to_string());
+        assert_eq!(absolute(&info["manifestPath"]), dir.join("tile.png.json"));
         assert_eq!(captured.lock().unwrap().len(), 2);
         assert!(help().contains("--manifest"));
     }
@@ -450,13 +460,17 @@ mod tests {
         let dir = crate::auth::tests::temp_dir("tile-relative").canonicalize().unwrap();
         assert!(crate::project::root(&dir).is_none(), "the test runs outside a project");
         RgbaImage::from_pixel(128, 32, Rgba([90, 90, 200, 255])).save(dir.join("sky.png")).unwrap();
-        // Paths relative to the process's folder, as a user types them.
-        let here = std::env::current_dir().unwrap();
-        let sky = pathdiff(&dir.join("sky.png"), &here);
+        // A path relative to the folder tile runs in, as a user types it. That folder is inside the temp dir, not the
+        // process's folder, which may sit on another drive (Windows CI) where no relative path to the temp dir exists.
+        let work = dir.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let sky = Path::new("..").join("sky.png").display().to_string();
         assert!(Path::new(&sky).is_relative(), "the panorama is given as a relative path");
-        let opts = parse(&args(&[&sky, "-o", &pathdiff(&dir.join("tile.png"), &here), "--manifest", "--keep-edit", "--quiet"])).unwrap().unwrap();
+        assert!(work.join(&sky).is_file() && !Path::new(&sky).exists(), "the relative path resolves against the cwd argument, not the process's folder");
+        // The output stays absolute: tile resolves -o against the process's folder, not `cwd`.
+        let opts = parse(&args(&[&sky, "-o", dir.join("tile.png").to_str().unwrap(), "--manifest", "--keep-edit", "--quiet"])).unwrap().unwrap();
         let (backend, captured) = serve(vec![(200, "application/json", direct_response())]);
-        assert_eq!(execute_in(&opts, &backend, &|| Ok(creds()), &here).unwrap(), 0);
+        assert_eq!(execute_in(&opts, &backend, &|| Ok(creds()), &work).unwrap(), 0);
         assert_eq!(captured.lock().unwrap().len(), 1);
         // Another, deeper folder without the panorama, where the relative path leads nowhere.
         let elsewhere = crate::auth::tests::temp_dir("tile-relative-elsewhere").canonicalize().unwrap().join("a/b/c/d");
@@ -545,15 +559,5 @@ mod tests {
         assert!(dir.join("next.png").is_file());
         assert_eq!(captured.lock().unwrap().len(), 2);
         assert_eq!(take_warnings(), ["asked for quality low, the backend returned medium"]);
-    }
-
-    /// `path` relative to `base`, through `..` where needed.
-    fn pathdiff(path: &Path, base: &Path) -> String {
-        let (path, base) = (path.canonicalize().unwrap_or(path.to_path_buf()), base.canonicalize().unwrap());
-        let common = path.components().zip(base.components()).take_while(|(a, b)| a == b).count();
-        let mut out = PathBuf::new();
-        for _ in base.components().skip(common) { out.push(".."); }
-        for part in path.components().skip(common) { out.push(part); }
-        out.display().to_string()
     }
 }
