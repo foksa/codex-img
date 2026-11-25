@@ -1528,8 +1528,8 @@ mod tests {
             }
         }
         for p in img.pixels_mut() {
-            for c in 0..3 {
-                p.0[c] = (f64::from(p.0[c]) + 6.0 * rng.normal()).clamp(0.0, 255.0) as u8;
+            for v in p.0.iter_mut().take(3) {
+                *v = (f64::from(*v) + 6.0 * rng.normal()).clamp(0.0, 255.0) as u8;
             }
         }
         image::imageops::resize(&img, w, h, image::imageops::FilterType::Lanczos3)
